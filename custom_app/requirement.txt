@@ -1,0 +1,8 @@
+Flask==2.3.3
+flask-sqlalchemy==3.0.5
+flask-mqtt==1.2.1
+gunicorn==21.2.0  # UPGRADED TO RESOLVE EVENTLET COMPATIBILITY ISSUE
+werkzeug==2.3.7
+flask-cors==3.0.10
+flask-socketio==5.3.6
+eventlet==0.33.3
