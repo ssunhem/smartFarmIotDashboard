@@ -1,0 +1,94 @@
+version: '3.8'
+
+services:
+  # ------------------------------------------------------------------
+  # 1. MQTT BROKER (Mosquitto)
+  # ------------------------------------------------------------------
+  mosquitto:
+    image: eclipse-mosquitto:2.0.15
+    container_name: mosquitto
+    restart: always
+    # Standard ports for MQTT (1883) and WebSockets (9001)
+    ports:
+      - "1883:1883" 
+      - "9001:9001" 
+    # Use volumes for persistent configuration and data
+    volumes:
+      - ./mosquitto/config:/mosquitto/config
+      - ./mosquitto/data:/mosquitto/data
+      - ./mosquitto/log:/mosquitto/log
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf
+
+  # ------------------------------------------------------------------
+  # 2. TIME-SERIES DATABASE (InfluxDB v2)
+  # ------------------------------------------------------------------
+  influxdb:
+    image: influxdb:2.7
+    container_name: influxdb
+    restart: always
+    ports:
+      - "8086:8086"
+    environment:
+      # Initial setup variables (MUST match Telegraf config)
+      - DOCKER_INFLUXDB_INIT_MODE=setup
+      - DOCKER_INFLUXDB_INIT_USERNAME=admin
+      - DOCKER_INFLUXDB_INIT_PASSWORD=password123
+      - DOCKER_INFLUXDB_INIT_ORG=smartfarm_org
+      - DOCKER_INFLUXDB_INIT_BUCKET=sensor_data
+      - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=my-secret-token # CRITICAL: MUST match Telegraf's token
+    volumes:
+      - influxdb_data:/var/lib/influxdb2
+
+  # ------------------------------------------------------------------
+  # 3. DATA INGESTER (Telegraf)
+  # ------------------------------------------------------------------
+  telegraf:
+    image: telegraf:latest
+    container_name: telegraf
+    restart: always
+    volumes:
+      - ./telegraf/telegraf.conf:/etc/telegraf/telegraf.conf:ro
+    depends_on:
+      - mosquitto
+      - influxdb
+  # Ensures Telegraf can talk to both services
+
+  # ------------------------------------------------------------------
+  # 4. CUSTOM MANAGEMENT APP (New Service)
+  # ------------------------------------------------------------------
+  custom_app:
+    build:
+      context: ./custom_app
+      dockerfile: Dockerfile 
+    image: custom_farm_manager:latest
+    container_name: custom_farm_manager
+    restart: always
+    ports:
+      - "5000:5000"
+    environment:
+      - FLASK_ENV=production
+      # Ensure this host name matches the service name above
+      - MQTT_BROKER_URL=mosquitto
+      - APP_PORT=5000
+      
+    # Fixed Command: Waits for Mosquitto, applies DNS fix, then starts Gunicorn
+    command: |
+      /bin/sh -c '
+        echo "Waiting for mosquitto:1883 to accept connections..."
+        while ! nc -z mosquitto 1883; do   
+          sleep 0.5;
+        done
+        echo "Mosquitto is confirmed up. Starting Manager via SocketIO server..."
+        export EVENTLET_NO_GREENDNS=yes;
+        python app.py
+      '
+    depends_on:
+      - mosquitto
+    # command: ["flask", "run", "--host", "0.0.0.0", "--port", "5000"]
+
+# ------------------------------------------------------------------
+# VOLUMES
+# ------------------------------------------------------------------
+volumes:
+  influxdb_data:
+  custom_app_data:  # New volume for the app's database
