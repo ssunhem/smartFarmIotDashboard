@@ -1,0 +1,1691 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart Farm Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+    <script src="realtime_updates.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f7f9fb;
+        }
+        .status-bar-info { background-color: #2563eb; color: white; }
+        .status-bar-success { background-color: #10b981; color: white; }
+        .status-bar-warning { background-color: #fbbf24; color: black; }
+        .status-bar-error { background-color: #ef4444; color: white; }
+        .card { border-radius: 0.75rem; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05); }
+        .device-card-header { display: flex; justify-content: space-between; align-items: center; padding: 1rem; border-bottom: 1px solid #f3f4f6; }
+        .panel-card-header { display: flex; justify-content: space-between; align-items: center; padding: 1rem; border-bottom: 1px solid #f3f4f6; }
+        .panel-card { position: absolute; top: 150px; left: 25px; width: 300px; height: 150px; }
+        .chart-container { position:relative; width: 260px; height: 30px; }
+    </style>
+</head>
+<body class="min-h-screen">
+
+    <!-- Status Bar (Toast Notification) -->
+    <div id="status-bar" class="hidden status-bar-info fixed top-4 right-4 m-4 p-3 rounded-lg shadow-xl z-50 text-sm transition-all duration-300"></div>
+
+    <!-- Confirmation Modal -->
+    <div id="confirmation-modal" class="hidden fixed inset-0 bg-gray-900 bg-opacity-50 z-50 flex items-center justify-center">
+        <div class="bg-white p-6 rounded-xl shadow-2xl w-full max-w-sm">
+            <h3 id="confirm-title" class="text-xl font-bold text-gray-900 mb-3">Confirm Action</h3>
+            <p id="confirm-message" class="text-gray-700 mb-6">Are you sure you want to proceed?</p>
+            <div class="flex justify-end space-x-3">
+                <button id="confirm-cancel-btn" class="px-4 py-2 bg-gray-200 text-gray-700 font-medium rounded-lg hover:bg-gray-300 transition">Cancel</button>
+                <button id="confirm-action-btn" class="px-4 py-2 bg-red-600 text-white font-medium rounded-lg hover:bg-red-700 transition">Confirm</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Global Navigation -->
+    <nav id="nav-bar" class="hidden bg-white shadow-md sticky top-0 z-40">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between h-16">
+                <div class="flex">
+                    <div class="flex-shrink-0 flex items-center text-xl font-bold text-green-600">
+                        <i data-lucide="leaf" class="w-6 h-6 mr-2"></i> SmartFarm
+                    </div>
+                    <div class="hidden sm:-my-px sm:ml-6 sm:flex sm:space-x-8">
+                        <a href="#" onclick="switchView('profile-view')" class="border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">
+                            <i data-lucide="person-standing" class="w-4 h-4 mr-1"></i> User
+                        </a>
+                        <a href="#" onclick="switchView('farm-management-view')" class="border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">
+                            <i data-lucide="building" class="w-4 h-4 mr-1"></i> Farms
+                        </a>
+                        <a href="#" onclick="switchView('device-management-view')" class="border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">
+                            <i data-lucide="thermometer" class="w-4 h-4 mr-1"></i> Devices
+                        </a>
+                        <a href="#" onclick="switchView('dashboard-view')" class="border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">
+                            <i data-lucide="monitor-cloud" class="w-4 h-4 mr-1"></i> Monitor!
+                        </a>
+                    </div>
+                </div>
+                <div class="flex items-center">
+                    <span class="text-sm font-medium text-gray-700 mr-3">Welcome, <span id="dashboard-username" class="font-bold text-green-600">User</span>!</span>
+                    <button onclick="handleLogout()" class="text-red-500 hover:text-red-700 flex items-center text-sm font-medium">
+                        <i data-lucide="log-out" class="w-4 h-4 mr-1"></i> Logout
+                    </button>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <main class="max-w-7xl mx-auto py-8 sm:px-6 lg:px-8">
+        <!-- Auth View -->
+        <div id="auth-view" class="flex items-center justify-center min-h-[calc(100vh-8rem)]">
+            <div class="w-full max-w-md card bg-white p-8">
+                <h2 id="auth-title" class="text-3xl font-bold text-center mb-6 text-green-600">Log In</h2>
+                <form id="auth-form" onsubmit="handleAuth(event)">
+                    <input type="hidden" id="auth-mode" value="login">
+                    <div class="mb-4">
+                        <label for="username" class="block text-sm font-medium text-gray-700 mb-1">Username</label>
+                        <input type="text" id="username" required class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-green-500 focus:border-green-500 transition">
+                    </div>
+                    <div id="email-group" class="mb-4 hidden">
+                        <label for="email" class="block text-sm font-medium text-gray-700 mb-1">Email (Optional)</label>
+                        <input type="email" id="email" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-green-500 focus:border-green-500 transition">
+                    </div>
+                    <div class="mb-6">
+                        <label for="password" class="block text-sm font-medium text-gray-700 mb-1">Password</label>
+                        <input type="password" id="password" required class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-green-500 focus:border-green-500 transition">
+                    </div>
+                    <button id="auth-submit-btn" type="submit" class="w-full bg-green-600 text-white py-2 rounded-lg font-semibold hover:bg-green-700 transition duration-300">Log In</button>
+                </form>
+                <div class="mt-6 text-center">
+                    <button id="toggle-auth-btn" onclick="toggleAuthMode()" class="text-sm text-green-600 hover:text-green-700 font-medium">Need an account? Register</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- User Preference View -->
+        <div id="profile-view" class="hidden">
+            <h1 class="text-3xl font-bold text-gray-800 mb-6 flex items-center">
+                <i data-lucide="user" class="w-7 h-7 mr-2 text-primary"></i> User Profile
+            </h1>
+            <div class="card bg-white p-6">
+                <h2 class="text-xl font-semibold text-gray-700 mb-4">Account Information</h2>
+                <p><strong>User ID:</strong> <span class="font-mono text-gray-700" id="profile-user-id">Loading...</span></p>
+                <p class="mt-4 text-gray-600">This is a placeholder for user settings, preferences, and authentication details.</p>
+            </div>
+        </div>
+
+        <!-- Farm Management View -->
+        <div id="farm-management-view" class="hidden">
+            <div class="flex justify-between items-center mb-6">
+                <h1 class="text-3xl font-bold text-gray-800">Farm Management</h1>
+                <button onclick="showFarmForm('create')" class="bg-blue-600 text-white px-4 py-2 rounded-lg font-medium hover:bg-blue-700 transition flex items-center">
+                    <i data-lucide="plus-circle" class="w-5 h-5 mr-2"></i> Add New Farm
+                </button>
+            </div>
+
+            <div id="farm-dashboard-stats" class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+                <!-- Farm Count Card -->
+                <div class="card bg-white p-6">
+                    <div class="flex items-center">
+                        <div class="p-3 rounded-full bg-primary/10 text-primary mr-4"><i data-lucide="sprout" class="w-6 h-6"></i></div>
+                        <div>
+                            <p class="text-sm font-medium text-gray-500">Total Farms</p>
+                            <p id="farm-total-farms-stat" class="text-2xl font-bold text-gray-900">0</p>
+                        </div>
+                    </div>
+                </div>
+                <!-- Device Count Card -->
+                <div class="card bg-white p-6">
+                    <div class="flex items-center">
+                        <div class="p-3 rounded-full bg-secondary/10 text-secondary mr-4"><i data-lucide="cpu" class="w-6 h-6"></i></div>
+                        <div>
+                            <p class="text-sm font-medium text-gray-500">Total Devices</p>
+                            <p id="farm-total-devices-stat" class="text-2xl font-bold text-gray-900">0</p>
+                        </div>
+                    </div>
+                </div>
+                <!-- Active Devices Card -->
+                <div class="card bg-white p-6">
+                    <div class="flex items-center">
+                        <div class="p-3 rounded-full bg-accent/10 text-accent mr-4"><i data-lucide="activity" class="w-6 h-6"></i></div>
+                        <div>
+                            <p class="text-sm font-medium text-gray-500">Devices Online</p>
+                            <p id="farm-active-devices-stat" class="text-2xl font-bold text-gray-900">0</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <h2 class="text-2xl font-bold text-gray-800">Farms List</h2>
+
+            <!-- Farm Form Modal -->
+            <div id="farm-form-container" class="hidden card bg-white p-6 mb-6">
+                <h2 id="farm-form-title" class="text-2xl font-semibold text-gray-800 mb-4">Add New Farm</h2>
+                <form id="farm-form" onsubmit="handleFarmFormSubmit(event)" data-mode="create" data-farm-id="">
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+                        <div>
+                            <label for="farm-id-code" class="block text-sm font-medium text-gray-700 mb-1">Farm ID Code (Unique)</label>
+                            <input type="text" id="farm-id-code" required class="w-full px-3 py-2 border rounded-lg">
+                        </div>
+                        <div>
+                            <label for="farm-name" class="block text-sm font-medium text-gray-700 mb-1">Farm Name</label>
+                            <input type="text" id="farm-name" required class="w-full px-3 py-2 border rounded-lg">
+                        </div>
+                        <div>
+                            <label for="farm-location" class="block text-sm font-medium text-gray-700 mb-1">Location (e.g., City, State)</label>
+                            <input type="text" id="farm-location" class="w-full px-3 py-2 border rounded-lg">
+                        </div>
+                    </div>
+                    <div class="flex justify-end space-x-3">
+                        <button type="button" onclick="document.getElementById('farm-form-container').classList.add('hidden')" class="px-4 py-2 bg-gray-200 text-gray-700 font-medium rounded-lg hover:bg-gray-300 transition">Cancel</button>
+                        <button id="farm-submit-btn" type="submit" class="px-4 py-2 bg-green-600 text-white font-medium rounded-lg hover:bg-green-700 transition">Save Farm</button>
+                    </div>
+                </form>
+            </div>
+
+            <!-- Farms List -->
+            <div id="farms-list" class="space-y-4">
+                <!-- Farm cards will be rendered here -->
+            </div>
+        </div>
+
+        <!-- Device Management View -->
+        <div id="device-management-view" class="hidden">
+            <div class="flex justify-between items-center mb-6">
+                <h1 class="text-3xl font-bold text-gray-800">Device Management</h1>
+                <div class="flex space-x-3">
+                    <select id="device-farm-selector" onchange="fetchDevices(selector='device-farm-selector')" class="px-4 py-2 border rounded-lg shadow-sm focus:ring-green-500 focus:border-green-500 transition">
+                        <option value="">-- Choose Farm --</option>
+                        <!-- Options populated by JS -->
+                    </select>
+                    <button id="add-device-btn" disabled class="bg-blue-600 text-white px-4 py-2 rounded-lg font-medium hover:bg-blue-700 transition disabled:bg-gray-400 flex items-center">
+                        <i data-lucide="cpu" class="w-5 h-5 mr-2"></i> Add New Device
+                    </button>
+                </div>                
+            </div>
+
+            <div id="device-dashboard-stats" class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+                <!-- Farm Count Card -->
+                <div class="card bg-white p-6">
+                    <div class="flex items-center">
+                        <div class="p-3 rounded-full bg-primary/10 text-primary mr-4"><i data-lucide="sprout" class="w-6 h-6"></i></div>
+                        <div>
+                            <p class="text-sm font-medium text-gray-500">Total Farms</p>
+                            <p id="device-total-farms-stat" class="text-2xl font-bold text-gray-900">0</p>
+                        </div>
+                    </div>
+                </div>
+                <!-- Device Count Card -->
+                <div class="card bg-white p-6">
+                    <div class="flex items-center">
+                        <div class="p-3 rounded-full bg-secondary/10 text-secondary mr-4"><i data-lucide="cpu" class="w-6 h-6"></i></div>
+                        <div>
+                            <p class="text-sm font-medium text-gray-500">Total Devices</p>
+                            <p id="device-total-devices-stat" class="text-2xl font-bold text-gray-900">0</p>
+                        </div>
+                    </div>
+                </div>
+                <!-- Active Devices Card -->
+                <div class="card bg-white p-6">
+                    <div class="flex items-center">
+                        <div class="p-3 rounded-full bg-accent/10 text-accent mr-4"><i data-lucide="activity" class="w-6 h-6"></i></div>
+                        <div>
+                            <p class="text-sm font-medium text-gray-500">Devices Online</p>
+                            <p id="device-active-devices-stat" class="text-2xl font-bold text-gray-900">0</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <h2 class="text-2xl font-bold text-gray-800">Devices List</h2>
+
+            <!-- Device Form Modal -->
+            <div id="device-form-container" class="hidden card bg-white p-6 mb-6">
+                <h2 id="device-form-title" class="text-2xl font-semibold text-gray-800 mb-4">Add New Device</h2>
+                <form id="device-form" onsubmit="handleDeviceFormSubmit(event)" data-mode="create" data-device-id="" data-farm-id-code="">
+                    <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
+                        <div>
+                            <label for="device-farm-code-display" class="block text-sm font-medium text-gray-700 mb-1">Target Farm ID</label>
+                            <p id="device-farm-code-display" class="w-full px-3 py-2 bg-gray-100 border rounded-lg"></p>
+                        </div>
+                        <div>
+                            <label for="device-id-code" class="block text-sm font-medium text-gray-700 mb-1">Device ID Code (Unique)</label>
+                            <input type="text" id="device-id-code" required class="w-full px-3 py-2 border rounded-lg">
+                        </div>
+                        <div>
+                            <label for="device-name" class="block text-sm font-medium text-gray-700 mb-1">Device Name</label>
+                            <input type="text" id="device-name" required class="w-full px-3 py-2 border rounded-lg">
+                        </div>
+                        <div>
+                            <label for="device-type" class="block text-sm font-medium text-gray-700 mb-1">Device Type</label>
+                            <select id="device-type" required class="w-full px-3 py-2 border rounded-lg">
+                                <!-- Options populated by JS -->
+                            </select>
+                        </div>
+                    </div>
+                    <div class="mb-4">
+                        <label for="device-location" class="block text-sm font-medium text-gray-700 mb-1">Location (Specific placement)</label>
+                        <input type="text" id="device-location" class="w-full px-3 py-2 border rounded-lg">
+                    </div>
+                    <div class="flex justify-end space-x-3">
+                        <button type="button" onclick="document.getElementById('device-form-container').classList.add('hidden')" class="px-4 py-2 bg-gray-200 text-gray-700 font-medium rounded-lg hover:bg-gray-300 transition">Cancel</button>
+                        <button id="device-submit-btn" type="submit" class="px-4 py-2 bg-green-600 text-white font-medium rounded-lg hover:bg-green-700 transition">Save Device</button>
+                    </div>
+                </form>
+            </div>
+
+            <!-- Devices List -->
+            <div id="devices-list" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                <p class="text-gray-500 col-span-full">Select a farm to view or add devices.</p>
+            </div>
+        </div>
+
+        <!-- Dashboard View (Placeholder for future) -->
+        <div id="dashboard-view" class="hidden">
+            <div class="flex justify-between items-center mb-6">
+                <h1 class="text-3xl font-bold text-gray-800">Farm Dashboard</h1>
+                    <div class="flex space-x-3">
+                    <select id="dashboard-farm-selector" onchange="fetchPanels()" class="px-4 py-2 border rounded-lg shadow-sm focus:ring-green-500 focus:border-green-500 transition">
+                        <option value="">-- Choose Farm --</option>
+                        <!-- Options populated by JS -->
+                    </select>
+                    <button id="add-panel-btn" disabled class="bg-blue-600 text-white px-4 py-2 rounded-lg font-medium hover:bg-blue-700 transition disabled:bg-gray-400 flex items-center">
+                        <i data-lucide="cpu" class="w-5 h-5 mr-2"></i> Add New Panel
+                    </button>
+                </div>
+            </div>
+
+            <!-- Panel Form Modal -->
+            <div id="panel-form-container" class="hidden card bg-white p-6 mb-6">
+                <h2 id="panel-form-title" class="text-2xl font-semibold text-gray-800 mb-4">Add New Device</h2>
+                <form id="panel-form" onsubmit="handlePanelFormSubmit(event)" data-mode="create" data-panel-id="" data-device-id="" data-farm-id-code="">
+                    <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
+                        <div>
+                            <label for="dashboard-farm-code-display" class="block text-sm font-medium text-gray-700 mb-1">Target Farm ID</label>
+                            <p id="dashboard-farm-code-display" class="w-full px-3 py-2 bg-gray-100 border rounded-lg"></p>
+                        </div>
+                        <div>
+                            <label for="device-selector" class="block text-sm font-medium text-gray-700 mb-1">Device Name (Select)</label>
+                            <select id="device-selector" onchange="callDeviceDetail(this.value.trim())" required class="w-full px-3 py-2 border rounded-lg">
+                                <!-- Options populated by JS -->
+                            </select>
+                        </div>
+                        <div>
+                            <label for="dashboard-device-code-display" class="block text-sm font-medium text-gray-700 mb-1">Device ID</label>
+                            <p id="dashboard-device-code-display" disabled class="w-full px-3 py-2 bg-gray-100 border rounded-lg"></p>
+                        </div>
+                        <div>
+                            <label for="dashboard-device-type-display" class="block text-sm font-medium text-gray-700 mb-1">Device Type</label>
+                            <p id="dashboard-device-type-display" disabled class="w-full px-3 py-2 bg-gray-100 border rounded-lg"></p>
+                        </div>
+                        <div class="mb-4">
+                            <label for="panel-id-code" class="block text-sm font-medium text-gray-700 mb-1">Panel ID Code (Unique)</label>
+                            <input type="text" id="panel-id-code" required class="w-full px-3 py-2 border rounded-lg">
+                        </div>
+                        <div>
+                            <label for="panel-name" class="block text-sm font-medium text-gray-700 mb-1">Panel Name</label>
+                            <input type="text" id="panel-name" required class="w-full px-3 py-2 border rounded-lg">
+                        </div>
+                        <div>
+                            <label for="panel-type" class="block text-sm font-medium text-gray-700 mb-1">Panel Type</label>
+                            <select id="panel-type" required class="w-full px-3 py-2 border rounded-lg">
+                                <!-- Options populated by JS -->
+                            </select>
+                        </div>
+                    </div>
+                    <div class="mb-4">
+                        <div>
+                            <label for="panel-width" class="block text-sm font-medium text-gray-700 mb-1">Panel Size (Width)</label>
+                            <input type="text" id="panel-width" value="300" class="w-full px-3 py-2 border rounded-lg">
+                        </div>
+                        <div>
+                            <label for="panel-height" class="block text-sm font-medium text-gray-700 mb-1">Panel Size (Height)</label>
+                            <input type="text" id="panel-height" value="150" class="w-full px-3 py-2 border rounded-lg">
+                        </div>
+                    </div>
+                    <div class="mb-4">
+                        <div>
+                            <label for="panel-top" class="block text-sm font-medium text-gray-700 mb-1">Position (From Top)</label>
+                            <input type="text" id="panel-top" class="w-full px-3 py-2 border rounded-lg">
+                        </div>
+                        <div>
+                            <label for="panel-left" class="block text-sm font-medium text-gray-700 mb-1">Position (From Left)</label>
+                            <input type="text" id="panel-left" class="w-full px-3 py-2 border rounded-lg">
+                        </div>
+                    </div>
+                    <div class="flex justify-end space-x-3">
+                        <button type="button" onclick="document.getElementById('panel-form-container').classList.add('hidden'); document.getElementById('panels-list').classList.remove('hidden');" class="px-4 py-2 bg-gray-200 text-gray-700 font-medium rounded-lg hover:bg-gray-300 transition">Cancel</button>
+                        <button id="panel-submit-btn" type="submit" class="px-4 py-2 bg-green-600 text-white font-medium rounded-lg hover:bg-green-700 transition">Save Device</button>
+                    </div>
+                </form>
+            </div>
+
+            <div id="panels-list" class="panels-list">
+            </div>
+
+        </div>
+    </main>
+
+    <script type="module">
+        // --- CONFIGURATION ---
+        const API_BASE_URL = 'http://localhost:5000/api/v1';
+        const DEVICE_TYPES = ['Sensor', 'Actuator'];
+        const PANEL_TYPES_SENSOR = ['Line', 'Gauge'];
+        const PANEL_TYPES_ACTUATOR = ['Button', 'Slider'];
+        
+        let auth; 
+        let currentUserId = localStorage.getItem('userId') || null;
+        let currentUsername = localStorage.getItem('username') || null;
+        let authToken = null; // Standardized auth token variable
+
+        let sensorChartInstance = null; // Variable to hold the Chart.js instance
+        
+        let allFarms = [];
+        let allDevices = [];
+        let allPanels = []; 
+
+        // --- UI Elements ---
+        const panelsList = document.getElementById('panels-list');
+        const addPanelBtn = document.getElementById('add-panel-btn');
+        const panelModal = document.getElementById('panel-modal');
+        const panelForm = document.getElementById('panel-form');
+        const savePanelBtn = document.getElementById('save-panel-btn');
+        const modalTitle = document.getElementById('modal-title');
+        const closeModaBtn = document.getElementById('close-modal-btn');
+        const authUserIdDisplay = document.getElementById('auth-user-id');
+        const authTokenDisplay = document.getElementById('auth-token-display');
+
+        // --- END GLOBAL STATE INITIALIZATION ---
+
+        // Utility function to introduce a delay
+        function sleep(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+
+        // Custom Confirmation Modal Implementation (Replaces window.confirm)
+        let confirmActionCallback = () => {};
+
+        function showConfirmModal(title, message, callback) {
+            document.getElementById('confirm-title').textContent = title;
+            document.getElementById('confirm-message').textContent = message;
+            document.getElementById('confirmation-modal').classList.remove('hidden');
+            confirmActionCallback = callback;
+        }
+
+        function hideConfirmModal() {
+            document.getElementById('confirmation-modal').classList.add('hidden');
+            confirmActionCallback = () => {};
+        }
+
+        document.getElementById('confirm-cancel-btn').onclick = hideConfirmModal;
+        document.getElementById('confirm-action-btn').onclick = () => {
+            confirmActionCallback();
+            hideConfirmModal();
+        };
+        // End Custom Confirmation Modal
+
+        // Function to display status messages
+        function showStatus(message, type = 'info') {
+            const bar = document.getElementById('status-bar');
+            bar.textContent = message;
+            // Ensure no existing status-bar- classes interfere
+            bar.className = 'fixed top-4 right-4 m-4 p-3 rounded-lg shadow-xl z-50 text-sm transition-all duration-300';
+            bar.classList.add(`status-bar-${type}`);
+            bar.classList.remove('hidden');
+
+            setTimeout(() => {
+                bar.classList.add('hidden');
+            }, 5000);
+        }
+
+        // Toggles between login and register modes
+        function toggleAuthMode() {
+            const modeInput = document.getElementById('auth-mode');
+            const title = document.getElementById('auth-title');
+            const submitBtn = document.getElementById('auth-submit-btn');
+            const toggleBtn = document.getElementById('toggle-auth-btn');
+            const emailGroup = document.getElementById('email-group');
+
+            if (modeInput.value === 'login') {
+                modeInput.value = 'register';
+                title.textContent = 'Register';
+                submitBtn.textContent = 'Register';
+                toggleBtn.textContent = 'Already have an account? Log In';
+                emailGroup.classList.remove('hidden');
+                document.getElementById('email').required = true;
+            } else {
+                modeInput.value = 'login';
+                title.textContent = 'Log In';
+                submitBtn.textContent = 'Log In';
+                toggleBtn.textContent = 'Need an account? Register';
+                emailGroup.classList.add('hidden');
+                document.getElementById('email').required = false;
+            }
+        }
+        
+        // API CALL HANDLER
+        async function makeApiCall(url, method, payload, explicitUserId = null, explicitAuthToken = null) {
+                const upperMethod = method.toUpperCase();
+                // Check if this is an authentication endpoint (e.g., /users/login)
+                const isAuthEndpoint = !url.includes('/users/'); 
+                
+                // Determine the effective user ID and auth token to use
+                const effectiveUserId = explicitUserId || currentUserId;
+                const effectiveAuthToken = explicitAuthToken || authToken; 
+
+                // Guardrail: Prevent API calls to authenticated endpoints if the user ID is missing
+                if (isAuthEndpoint && !effectiveUserId) {
+                    const errorMsg = "Authentication required for this action. User ID is missing.";
+                    console.error(errorMsg);
+                    showStatus("Please log in to perform this action.", "warning");
+                    switchView('auth-view', false);
+                    throw new Error(errorMsg); 
+                }
+                
+                let requestData = payload || {};
+                
+                const options = {
+                    method: upperMethod,
+                    headers: {}, 
+                };
+
+                // Inject Authorization header if a token is present
+                if (effectiveAuthToken) {
+                     options.headers['Authorization'] = `Bearer ${effectiveAuthToken}`;
+                }
+
+                // FIX FOR 401: Inject X-User-ID header for server-side authentication check
+                if (isAuthEndpoint && effectiveUserId) {
+                    options.headers['X-User-ID'] = effectiveUserId.toString();
+                }
+                
+                let finalUrl = url;
+                
+                // --- UPDATED LOGIC FOR GET, HEAD, AND DELETE ---
+                // These methods typically do not send a body, but can use query parameters.
+                if (upperMethod === 'GET' || upperMethod === 'HEAD' || upperMethod === 'DELETE') {
+                    const params = new URLSearchParams();
+                    
+                    // Add data (e.g., filters) to params for GET/HEAD/DELETE
+                    for (const key in requestData) {
+                        const value = requestData[key];
+                        if (value !== null && value !== undefined) {
+                             params.append(key, value);
+                        }
+                    }
+                    
+                    const queryString = params.toString();
+                    if (queryString) {
+                        finalUrl = `${url}?${queryString}`;
+                    }
+                    
+                    // IMPORTANT: Ensure Content-Type is NEVER sent for GET/HEAD/DELETE
+                    if (options.headers['Content-Type']) {
+                        delete options.headers['Content-Type'];
+                    }
+
+                } else {
+                    // POST/PUT/PATCH Logic
+                    // For non-GET methods on authenticated endpoints, the server's @require_auth decorator 
+                    // handles getting the user, but we still include user_id in the body for debugging/legacy if needed.
+                    if (isAuthEndpoint && effectiveUserId) {
+                        requestData = { ...requestData, user_id: effectiveUserId };
+                    }
+
+                    options.headers['Content-Type'] = 'application/json';
+                    options.body = JSON.stringify(requestData);
+                }
+
+                try {
+                    console.log(`API Call: ${upperMethod} ${finalUrl}`);
+                    console.log('Request Headers:', options.headers);
+                    const response = await fetch(finalUrl, options);
+                    console.log(response);
+                    const contentType = response.headers.get("content-type");
+                    let data = {};
+                    let rawResponseText = null;
+
+                    if (response.ok) {
+                        if (contentType && contentType.includes("application/json")) {
+                            try {
+                               data = await response.json();
+                            } catch (e) {
+                               console.warn("Successful response, but failed to parse JSON:", e);
+                            }
+                        }
+                        return data;
+                    } else {
+                        rawResponseText = await response.text();
+                        
+                        try {
+                            data = JSON.parse(rawResponseText);
+                        } catch (e) {
+                            // Fallback to raw text
+                        }
+
+                        const errorDetails = data.error || data.message || rawResponseText.substring(0, 100);
+                        const errorMessage = `API call failed with status ${response.status}: ${errorDetails}`;
+                        
+                        showStatus(errorMessage, "error");
+                        console.error('Full Error Response Body:', rawResponseText);
+                        throw new Error(errorMessage);
+                    }
+
+                } catch (error) {
+                    console.error('Network or API Error:', error);
+                    if (error.message.includes('User ID is missing')) return null;
+                    showStatus("An unexpected network error occurred or server rejected request. Check console.", "error");
+                    return null;
+                }
+            }
+
+        // FARM DATA FETCHING 
+        async function fetchFarms(renderList = true, userId = null, explicitAuthToken = null) {
+            const data = await makeApiCall(`${API_BASE_URL}/farms`, 'POST', null, userId, explicitAuthToken); 
+            if (data && data.farms) {
+                allFarms = data.farms;
+                document.getElementById('farm-total-farms-stat').textContent = allFarms.length;
+                document.getElementById('device-total-farms-stat').textContent = allFarms.length;
+                devicePopulateFarmSelectors();
+                dashboardPopulateFarmSelectors();
+                if (renderList) {
+                    renderFarms();
+                }
+                return data.farms;
+            } else {
+                allFarms = [];
+                if (renderList) {
+                    renderFarms();
+                }
+                return [];
+            }
+        }
+
+        // AUTHENTICATION HANDLER (Includes robust view switching)
+        async function handleAuth(event) {
+            event.preventDefault();
+            const mode = document.getElementById('auth-mode').value;
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+            const email = document.getElementById('email').value;
+            
+            const url = mode === 'login' ? `${API_BASE_URL}/users/login` : `${API_BASE_URL}/users/register`;
+            const payload = mode === 'login' ? { username, password } : { username, email, password };
+            
+            const data = await makeApiCall(url, 'POST', payload);
+
+            if (data) {
+                if (mode === 'register') {
+                    showStatus("Registration successful! Please log in.", "success");
+                    document.getElementById('username').value = username;
+                    toggleAuthMode();
+                } else {
+                    const foundId = data.userId || data.id || data.user_id;
+                    const newUserId = foundId ? String(foundId) : null;
+                    const token = data.token;
+
+                    if (!newUserId) {
+                        console.error('Login Response Missing User ID:', data);
+                        showStatus("Login failed: User ID not found in response.", "error");
+                        return;
+                    }
+
+                    currentUserId = newUserId;
+                    currentUsername = data.username || username;
+                    authToken = token;
+                    
+                    localStorage.setItem('userId', currentUserId);
+                    localStorage.setItem('username', currentUsername);
+                    
+                    await fetchFarms(true, currentUserId, authToken);
+
+                    switchView('farm-management-view', false); 
+
+                    document.getElementById('dashboard-username').textContent = currentUsername;
+                    showStatus(`Welcome back, ${currentUsername}!`, "success");
+                }
+            }
+        }
+        
+        // VIEW SWITCHER
+        function switchView(newViewName, doFetch = true) {
+            const views = ['auth-view', 'dashboard-view', 'farm-management-view', 'device-management-view'];
+            views.forEach(viewId => {
+                const view = document.getElementById(viewId);
+                if (viewId === newViewName) {
+                    view.classList.remove('hidden');
+                } else {
+                    view.classList.add('hidden');
+                }
+            });
+            
+            const navBar = document.getElementById('nav-bar');
+            
+            if (newViewName === 'auth-view') {
+                 navBar.classList.add('hidden');
+            } else {
+                 navBar.classList.remove('hidden');
+            }
+
+            // Update active navigation link styling
+            document.querySelectorAll('.nav-link').forEach(link => {
+                link.classList.toggle('text-primary', link.dataset.view === newViewName);
+                link.classList.toggle('font-bold', link.dataset.view === newViewName);
+                link.classList.toggle('text-gray-600', link.dataset.view !== newViewName);
+                link.classList.toggle('font-medium', link.dataset.view !== newViewName);
+            });
+
+
+            if (newViewName === 'farm-management-view' && doFetch) {
+                fetchFarms(true);
+            } else if (newViewName === 'device-management-view') {
+                // Ensure farms are loaded before viewing device page
+                fetchFarms(false).then(() => {
+                    const farmSelector = document.getElementById('device-farm-selector');
+                    if (farmSelector.value) {
+                        fetchDevices(selector='device-farm-selector');
+                    } else {
+                        document.getElementById('add-device-btn').disabled = true;
+                        document.getElementById('devices-list').innerHTML = '<p class="text-gray-500 col-span-full">Select a farm to view or add devices.</p>';
+                    }
+                });
+            } else if (newViewName === 'dashboard-view' && doFetch) {
+                // Fetch data for dashboard (optional, can be linked to farm fetch if desired)
+                fetchFarms(false).then(() => {
+                    const farmSelector = document.getElementById('dashboard-farm-selector');
+                    if (farmSelector.value) {
+                        fetchDevices(selector='dashboard-farm-selector');
+                    } else {
+                        document.getElementById('add-panel-btn').disabled = true;
+                        document.getElementById('panels-list').innerHTML = '<p class="text-gray-500 col-span-full">Select a farm to view or add panels.</p>';
+                    }
+                });
+            }
+        }
+
+        // FARM MANAGEMENT FUNCTIONS
+        function renderFarms() {
+            const listElem = document.getElementById('farms-list');
+            listElem.innerHTML = '';
+            
+            if (allFarms.length === 0) {
+                listElem.innerHTML = '<p class="text-gray-500">No farms registered yet. Add one above.</p>';
+                return;
+            }
+
+            allFarms.forEach(farm => {
+                const card = document.createElement('div');
+                card.className = 'flex justify-between items-center p-4 bg-white rounded-xl shadow-lg border border-gray-100';
+                card.innerHTML = `
+                    <div>
+                        <p class="text-lg font-bold text-green-700">${farm.name} <span class="text-sm font-normal text-gray-500">(${farm.farm_id_code})</span></p>
+                        <p class="text-sm text-gray-600">${farm.location || 'Location not specified'}</p>
+                    </div>
+                    <div class="space-x-2">
+                        <button class="text-blue-500 hover:text-blue-700 text-sm font-medium farm-edit-btn" data-action="edit-farm" data-id="${farm.id}" data-farm-id-code="${farm.farm_id_code}">
+                            <i data-lucide="pencil" class="w-4 h-4 inline"></i> Edit
+                        </button>
+                        <button class="text-red-500 hover:text-red-700 text-sm font-medium farm-delete-btn" data-action="delete-farm" data-id="${farm.id}" data-name="${farm.name}">
+                            <i data-lucide="trash-2" class="w-4 h-4 inline"></i> Delete
+                        </button>
+                    </div>
+                `;
+                listElem.appendChild(card);
+            });
+            lucide.createIcons();
+        }
+
+        function devicePopulateFarmSelectors() {
+            const selector = document.getElementById('device-farm-selector');
+            const currentSelection = selector.value;
+            
+            selector.innerHTML = '<option value="">-- Choose Farm --</option>';
+
+            allFarms.forEach(farm => {
+                const option = document.createElement('option');
+                option.value = farm.farm_id_code; // Use farm_id_code for the selector value
+                option.textContent = `${farm.name} (${farm.farm_id_code})`;
+                selector.appendChild(option);
+            });
+            
+            // Re-select the previously selected farm if it still exists
+            selector.value = currentSelection;
+            document.getElementById('add-device-btn').disabled = !currentSelection;
+
+        }
+
+        function dashboardPopulateFarmSelectors() {
+            const selector = document.getElementById('dashboard-farm-selector');
+            const currentSelection = selector.value;
+            
+            selector.innerHTML = '<option value="">-- Choose Farm --</option>';
+
+            allFarms.forEach(farm => {
+                const option = document.createElement('option');
+                option.value = farm.farm_id_code; // Use farm_id_code for the selector value
+                option.textContent = `${farm.name} (${farm.farm_id_code})`;
+                selector.appendChild(option);
+            });
+            
+            // Re-select the previously selected farm if it still exists
+            selector.value = currentSelection;
+            document.getElementById('add-panel-btn').disabled = !currentSelection;
+
+        }
+        
+        function showFarmForm(mode = 'create', farm = null) {
+            const formContainer = document.getElementById('farm-form-container');
+            const form = document.getElementById('farm-form');
+            const title = document.getElementById('farm-form-title');
+            const submitBtn = document.getElementById('farm-submit-btn');
+
+            if (mode === 'create') {
+                title.textContent = 'Add New Farm';
+                submitBtn.textContent = 'Save Farm';
+                form.dataset.mode = 'create';
+                form.dataset.farmId = '';
+                form.reset();
+                document.getElementById('farm-id-code').disabled = false;
+            } else if (mode === 'edit' && farm) {
+                title.textContent = `Edit Farm: ${farm.name}`;
+                submitBtn.textContent = 'Update Farm';
+                form.dataset.mode = 'edit';
+                form.dataset.farmId = farm.id;
+                document.getElementById('farm-id-code').value = farm.farm_id_code;
+                document.getElementById('farm-name').value = farm.name;
+                document.getElementById('farm-location').value = farm.location || '';
+                document.getElementById('farm-id-code').disabled = true; // Farm ID Code is immutable on edit
+            }
+
+            formContainer.classList.remove('hidden');
+            window.scrollTo(0, 0); // Scroll to form
+        }
+
+        async function handleFarmFormSubmit(event) {
+            event.preventDefault();
+            
+            const form = event.currentTarget;
+            const isEdit = form.dataset.mode === 'edit';
+            const farmId = form.dataset.farmId;
+            
+            const farmIdCode = document.getElementById('farm-id-code').value.trim();
+            const name = document.getElementById('farm-name').value.trim();
+            const location = document.getElementById('farm-location').value.trim();
+
+            if (!farmIdCode || !name) {
+                showStatus("Farm ID Code and Name are required.", "warning");
+                return;
+            }
+
+            const payload = {
+                farm_id_code: farmIdCode,
+                name: name,
+                location: location
+            };
+            
+            let url = '';
+            let method = '';
+            
+            if (isEdit) {
+                url = `${API_BASE_URL}/farms/${farmId}`;
+                method = 'PUT';
+            } else {
+                url = `${API_BASE_URL}/farms/create`;
+                method = 'POST';
+            }
+
+            const data = await makeApiCall(url, method, payload);
+
+            if (data) {
+                const action = isEdit ? 'updated' : 'created';
+                showStatus(`Farm '${name}' successfully ${action}.`, "success");
+                
+                form.reset();
+                document.getElementById('farm-form-container').classList.add('hidden');
+                
+                // Refresh farm list
+                await fetchFarms(true);
+            }
+        }
+        
+        async function deleteFarm(farmId, farmName) {
+            const url = `${API_BASE_URL}/farms/${farmId}/delete`;
+            const data = await makeApiCall(url, 'POST', null);
+            
+            if (data) {
+                showStatus(`Farm '${farmName}' deleted successfully.`, "success");
+                await fetchFarms(true);
+                // Also refresh devices if the deleted farm was selected
+                fetchDevices(selector='device-farm-selector'); 
+            }
+        }
+
+        function handleLogout() {
+            localStorage.removeItem('userId');
+            localStorage.removeItem('username');
+            currentUserId = null;
+            currentUsername = null;
+            authToken = null;
+            allFarms = [];
+            
+            switchView('auth-view');
+            document.getElementById('nav-bar').classList.add('hidden');
+            showStatus("You have been logged out.", "info");
+        }
+
+        // --- DEVICE MANAGEMENT FUNCTIONS (NEW) ---
+
+        // Fetch devices for the currently selected farm
+        async function fetchDevices(selector='device-farm-selector') {
+            const farmSelector = document.getElementById(selector);
+            const farmIdCode = farmSelector.value;
+            const devicesListElem = document.getElementById('devices-list');
+            var addDeviceBtn = document.getElementById('add-device-btn');
+            if (selector==='dashboard-farm-selector'){
+                addDeviceBtn = document.getElementById('add-panel-btn');
+            }
+                
+            addDeviceBtn.disabled = !farmIdCode;
+            devicesListElem.innerHTML = '';
+            allDevices = [];
+
+            if (!farmIdCode) {
+                 devicesListElem.innerHTML = '<p class="text-gray-500 col-span-full">Select a farm to view its devices.</p>';
+                 return;
+            }
+
+            devicesListElem.innerHTML = '<p class="text-blue-500 flex items-center col-span-full"><i data-lucide="loader-2" class="w-4 h-4 mr-2 animate-spin"></i> Loading devices...</p>';
+            lucide.createIcons();
+
+            const payload = { farm_id_code: farmIdCode };
+            const data = await makeApiCall(`${API_BASE_URL}/devices`, 'POST', payload);
+
+            if (data && data.devices) {
+                allDevices = data.devices;
+                document.getElementById('farm-total-devices-stat').textContent = allDevices.length;
+                document.getElementById('device-total-devices-stat').textContent = allDevices.length;
+                renderDevices(data.devices);
+                showStatus(`Found ${data.devices.length} devices in farm ${farmIdCode}.`, 'info');
+            } else {
+                 // Clear the list if the API call fails or returns no devices
+                 devicesListElem.innerHTML = '<p class="text-gray-500 col-span-full">No devices found for this farm. Add one above.</p>';
+            }
+        }
+
+        // Render devices list
+        function renderDevices(devices) {
+            const listElem = document.getElementById('devices-list');
+            if (!listElem) {
+                console.error("Element with ID 'devices-list' not found.");
+                return;
+            }
+            listElem.innerHTML = '';
+
+            if (devices.length === 0) {
+                listElem.innerHTML = '<p class="text-gray-500 col-span-full p-4 text-center">No devices found for this farm. Add one above.</p>';
+                return;
+            }
+
+            devices.forEach(device => {
+                const isActuator = device.type !== 'Sensor'; 
+                const card = document.createElement('div');
+                card.className = 'bg-white rounded-xl shadow-lg border border-gray-100 overflow-hidden transition-all duration-300 hover:shadow-xl';
+
+                let deviceSpecificContent = '';
+                
+                // --- Removed: openChartModal function (as it's no longer used) ---
+
+                if (isActuator) {
+                    // Actuator: Control buttons
+                    deviceSpecificContent = `
+                        <p class="text-sm font-medium text-gray-700 mt-3 mb-2 border-t pt-2">Control Actuator:</p>
+                        <div class="flex space-x-3">
+                            <button class="bg-green-600 hover:bg-green-700 text-white text-sm font-semibold py-2 px-4 rounded-lg flex items-center transition duration-200 shadow-md hover:shadow-lg" 
+                                onclick="controlDevice(${device.id}, 'ON', '${device.device_id_code}')">
+                                <i data-lucide="power" class="w-4 h-4 mr-1"></i> Activate
+                            </button>
+                            <button class="bg-red-600 hover:bg-red-700 text-white text-sm font-semibold py-2 px-4 rounded-lg flex items-center transition duration-200 shadow-md hover:shadow-lg" 
+                                onclick="controlDevice(${device.id}, 'OFF', '${device.device_id_code}')">
+                                <i data-lucide="power-off" class="w-4 h-4 mr-1"></i> Deactivate
+                            </button>
+                        </div>
+                    `;
+                } else {
+                    // Sensor: Live Data Display
+                    const rawValue = String(device.current_mqtt_value || '0.00').toUpperCase();
+                    const numericValue = parseFloat(rawValue);
+                    const unit = device.unit || '';
+                    let statusColor = 'bg-gray-100 text-gray-800';
+                    let statusText = 'No Data';
+                    let rangeText = `Range: ${device.min_value || 0}${unit} - ${device.max_value || 100}${unit}`;
+
+                    if (!isNaN(numericValue)) {
+                        statusText = numericValue.toFixed(2) + (unit ? ' ' + unit : '');
+                        statusColor = 'bg-blue-100 text-blue-800';
+
+                        if (numericValue > (device.max_value * 0.8) && numericValue <= device.max_value && numericValue >= device.min_value) {
+                            statusColor = 'bg-yellow-100 text-yellow-800';
+                        }
+                        if (numericValue > device.max_value || numericValue < device.min_value) {
+                            statusColor = 'bg-red-100 text-red-800 font-extrabold';
+                            statusText = 'ALERT: ' + statusText;
+                        }
+                    }
+
+                    deviceSpecificContent = `
+                        <div class="mt-3 pt-2 border-t border-gray-100">
+                            <p class="text-sm font-medium text-gray-700 mb-2">Live Sensor Data:</p>
+                            <div class="flex justify-between items-center p-2 bg-gray-50 rounded-md">
+                                <div class="text-xs text-gray-500 font-semibold">
+                                    ${rangeText}
+                                </div>
+                                <span class="inline-flex items-center rounded-full px-3 py-1 text-sm font-bold transition ${statusColor}">
+                                    ${statusText}
+                                </span>
+                            </div>
+                        </div>
+                    `;
+                }
+
+                // Main card HTML structure
+                card.innerHTML = `
+                    <div class="device-card-header bg-gray-50 p-4 flex items-center justify-between border-b border-gray-100">
+                        <div class="flex items-center space-x-3">
+                            <i data-lucide="${isActuator ? 'settings-2' : 'thermometer'}" class="w-7 h-7 p-1 rounded-full ${isActuator ? 'text-white bg-blue-500' : 'text-white bg-orange-500'}"></i>
+                            <div>
+                                <p class="text-xl font-bold text-gray-800">${device.name}</p>
+                                <p class="text-xs text-gray-500">ID: ${device.device_id_code} | Type: ${device.type}</p>
+                            </div>
+                        </div>
+                        <div class="space-x-1 flex items-center">
+                            <!-- REMOVED "View History" button -->
+                            <button title="Edit Device" class="text-blue-500 hover:text-blue-700 p-2 rounded-full hover:bg-blue-50 transition device-edit-btn" data-action="edit-device" data-id="${device.id}">
+                                <i data-lucide="pencil" class="w-4 h-4"></i>
+                            </button>
+                            <button title="Delete Device" class="text-red-500 hover:text-red-700 p-2 rounded-full hover:bg-red-50 transition device-delete-btn" data-action="delete-device" data-id="${device.id}" data-name="${device.name}">
+                                <i data-lucide="trash-2" class="w-4 h-4"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="p-4">
+                        <p class="text-sm text-gray-600 font-medium mb-1">Location:</p>
+                        <p class="text-base text-gray-800">${device.location || 'Not Specified'}</p>
+                        ${deviceSpecificContent}
+                    </div>
+                `;
+                listElem.appendChild(card);
+            });
+
+            // Re-create Lucide icons after adding new HTML content
+            if (typeof lucide !== 'undefined' && lucide.createIcons) {
+                lucide.createIcons();
+            }
+        }
+
+        // Show Device Form
+        function showDeviceForm(mode = 'create', device = null) {
+            const formContainer = document.getElementById('device-form-container');
+            const form = document.getElementById('device-form');
+            const title = document.getElementById('device-form-title');
+            const submitBtn = document.getElementById('device-submit-btn');
+            const farmSelector = document.getElementById('device-farm-selector');
+            const selectedFarmIdCode = farmSelector.value;
+            const deviceIdCodeInput = document.getElementById('device-id-code');
+            const deviceTypeSelector = document.getElementById('device-type');
+
+            // Populate Device Type Selector
+            deviceTypeSelector.innerHTML = DEVICE_TYPES.map(type => `<option value="${type}">${type}</option>`).join('');
+
+            // Set the Farm ID Code display
+            document.getElementById('device-farm-code-display').value = selectedFarmIdCode;
+            document.getElementById('device-farm-code-display').textContent = selectedFarmIdCode;
+            form.dataset.farmIdCode = selectedFarmIdCode;
+
+            if (selectedFarmIdCode === '') {
+                showStatus("Please select a farm first.", "warning");
+                return;
+            }
+
+            if (mode === 'create') {
+                title.textContent = `Add New Device to ${selectedFarmIdCode}`;
+                submitBtn.textContent = 'Create Device';
+                form.dataset.mode = 'create';
+                form.dataset.deviceId = '';
+                form.reset();
+                deviceIdCodeInput.disabled = false;
+                deviceIdCodeInput.required = true;
+            } else if (mode === 'edit' && device) {
+                title.textContent = `Edit Device: ${device.name}`;
+                submitBtn.textContent = 'Update Device';
+                form.dataset.mode = 'edit';
+                form.dataset.deviceId = device.id;
+
+                deviceIdCodeInput.value = device.device_id_code;
+                deviceIdCodeInput.disabled = true; // Device ID Code is immutable on edit
+                deviceIdCodeInput.required = false;
+                
+                document.getElementById('device-name').value = device.name;
+                document.getElementById('device-type').value = device.type;
+                document.getElementById('device-location').value = device.location || '';
+            }
+
+            formContainer.classList.remove('hidden');
+            window.scrollTo(0, 0); // Scroll to form
+        }
+
+        // Handle Device Form Submission
+        async function handleDeviceFormSubmit(event) {
+            event.preventDefault();
+            
+            const form = event.currentTarget;
+            const isEdit = form.dataset.mode === 'edit';
+            const deviceId = form.dataset.deviceId;
+            const farmIdCode = form.dataset.farmIdCode;
+            
+            const deviceIdCode = document.getElementById('device-id-code').value.trim();
+            const name = document.getElementById('device-name').value.trim();
+            const type = document.getElementById('device-type').value;
+            const location = document.getElementById('device-location').value.trim();
+
+            if (!farmIdCode || !name || !type || (!isEdit && !deviceIdCode)) {
+                showStatus("Farm, Name, Type, and Device ID Code (for new devices) are required.", "warning");
+                return;
+            }
+
+            let payload = {
+                name: name,
+                type: type,
+                location: location
+            };
+            
+            let url = '';
+            let method = '';
+            
+            if (isEdit) {
+                // PUT for editing
+                url = `${API_BASE_URL}/devices/${deviceId}`;
+                method = 'PUT';
+            } else {
+                // POST for creating
+                url = `${API_BASE_URL}/devices/create`; 
+                method = 'POST';
+                payload = { ...payload, farm_id_code: farmIdCode, device_id_code: deviceIdCode };
+            }
+
+            const data = await makeApiCall(url, method, payload);
+
+            if (data) {
+                const action = isEdit ? 'updated' : 'created';
+                showStatus(`Device '${name}' successfully ${action}. Now refreshing list...`, "info");
+                
+                form.reset();
+                document.getElementById('device-form-container').classList.add('hidden');
+                
+                // --- FIX: Introduce a small delay after CREATING a new item ---
+                // This helps mitigate eventual consistency issues where the new item 
+                // isn't immediately available for the next fetch/query.
+                if (!isEdit) {
+                    await sleep(500); 
+                }
+                // --- END FIX ---
+                
+                // Refresh device list
+                await fetchDevices(selector='device-farm-selector');
+                showStatus(`Device '${name}' successfully ${action}.`, "success"); // Final succeess status
+            }
+        }
+
+        // Handle Device Deletion (Uses custom modal)
+        async function deleteDevice(deviceId, deviceName) {
+            showConfirmModal(
+                'Confirm Device Deletion',
+                `Are you sure you want to delete device "${deviceName}"? This cannot be undone.`,
+                async () => {
+                    const url = `${API_BASE_URL}/devices/${deviceId}/delete`;
+                    const data = await makeApiCall(url, 'POST', null);
+                    
+                    if (data) {
+                        showStatus(`Device '${deviceName}' deleted successfully.`, "success");
+                        await fetchDevices(selector='device-farm-selector');
+                    }
+                }
+            );
+        }
+
+        // --- Chart Rendering Functions ---
+
+        // 1. Line Chart Implementation
+        function createLineChart(panelPath, canvasId, label, dataPoints) {
+            const ctx = document.getElementById(canvasId);
+            
+            // Destroy previous chart instance if it exists to prevent memory leaks
+            const existingChart = Chart.getChart(canvasId);
+            if (existingChart) {
+                existingChart.destroy();
+            }
+
+            var staticChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: dataPoints.map(p => p.time), // Assuming dataPoints has time labels
+                    datasets: [{
+                        label: label,
+                        data: dataPoints.map(p => p.value),
+                        borderColor: 'rgb(79, 70, 229)', // Tailwind indigo-600
+                        backgroundColor: 'rgba(79, 70, 229, 0.1)',
+                        tension: 0.3,
+                        fill: true,
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: { beginAtZero: true }
+                    },
+                    plugins: {
+                        legend: { display: false }
+                    }
+                }
+            });
+
+            registerChartPanel(panelPath, staticChart);
+        }
+
+
+        // 2. Gauge (Doughnut) Implementation
+        function createGaugeChart(panelPath, canvasId, value, max) {
+            const ctx = document.getElementById(canvasId);
+            const percentage = (value / max) * 100;
+            const remaining = max - value;
+            
+            // Helper function for color based on value
+            const getColor = (val, max) => {
+                const p = val / max;
+                if (p < 0.4) return 'rgb(74, 222, 128)'; // Green
+                if (p < 0.8) return 'rgb(251, 191, 36)'; // Yellow
+                return 'rgb(239, 68, 68)'; // Red
+            };
+
+            // Destroy previous chart instance if it exists
+            const existingChart = Chart.getChart(canvasId);
+            if (existingChart) {
+                existingChart.destroy();
+            }
+            
+            var staticChart = new Chart(ctx, {
+                type: 'doughnut',
+                data: {
+                    labels: ['Current Value', 'Remaining'],
+                    datasets: [{
+                        data: [value, remaining > 0 ? remaining : 0],
+                        backgroundColor: [getColor(value, max), 'rgb(229, 231, 235)'], // Gray for remaining
+                        borderWidth: 0,
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    circumference: 180, // Half circle
+                    rotation: -90,      // Start at the bottom
+                    cutout: '70%',
+                    plugins: {
+                        tooltip: { enabled: false },
+                        legend: { display: false }
+                    }
+                },
+                // Display the value in the center
+                plugins: [{
+                    id: 'textCenter',
+                    beforeDatasetsDraw(chart, args, pluginOptions) {
+                        const { ctx, data } = chart;
+                        ctx.save();
+                        ctx.font = 'bold 1.5rem sans-serif';
+                        ctx.fillStyle = getColor(value, max);
+                        ctx.textAlign = 'center';
+                        ctx.textBaseline = 'middle';
+                        const x = chart.getDatasetMeta(0).data[0].x;
+                        const y = chart.getDatasetMeta(0).data[0].y;
+                        ctx.fillText(`${percentage.toFixed(0)}%`, x, y);
+                        ctx.font = '0.75rem sans-serif';
+                        ctx.fillStyle = 'rgb(107, 114, 128)';
+                        ctx.fillText(`(Value: ${value})`, x, y + 20); 
+                        ctx.restore();
+                    }
+                }]
+            });
+            
+            registerChartPanel(panelPath, staticChart);
+        }
+
+        async function fetchPanels() {
+            const farmSelector = document.getElementById('dashboard-farm-selector');
+            panelsList.innerHTML = '<p class="md:col-span-3 text-center text-gray-500 p-8">Loading panels...</p>';
+            fetchDevices('dashboard-farm-selector');
+            
+            // Re-use status container for loading indication
+            showStatus("Attempting to connect to API...", "warning");
+            
+            // 1. Call makeApiCall with GET method and no payload (it handles X-User-ID)
+            const panels = await makeApiCall(`${API_BASE_URL}/panels`, 'POST', {farm_id_code: farmSelector.value}); 
+            if (panels) { // makeApiCall returns data on success, null on error/failure
+                renderPanels(panels);
+                allPanels = panels;
+                lucide.createIcons();
+                showStatus(`Success! Showing **${panels.length}** panels.`, "success");
+            } else {
+                 // Error was already handled and displayed by showStatus inside makeApiCall
+                 renderPanels([]); 
+            }
+        }
+        
+        // Show Panle Form
+        function showPanelForm(mode = 'create', panel = null) {
+            const formContainer = document.getElementById('panel-form-container');
+            const form = document.getElementById('panel-form');
+            const title = document.getElementById('panel-form-title');
+            const submitBtn = document.getElementById('panel-submit-btn');
+            const farmSelector = document.getElementById('dashboard-farm-selector');
+            const deviceSelector = document.getElementById('device-selector');
+            const selectedFarmIdCode = farmSelector.value;
+            const panelIdCodeInput = document.getElementById('panel-id-code');
+            const panelTypeSelector = document.getElementById('panel-type');
+            const panelList = document.getElementById('panels-list');
+
+            // Populate Device Selector
+            deviceSelector.innerHTML = allDevices.map(device => device.name).map(type => `<option value="${type}">${type}</option>`).join('');
+            callDeviceDetail(deviceSelector.value);
+
+            // Set the Farm ID Code display
+            document.getElementById('dashboard-farm-code-display').value = selectedFarmIdCode;
+            document.getElementById('dashboard-farm-code-display').textContent = selectedFarmIdCode;
+            form.dataset.farmIdCode = selectedFarmIdCode;
+
+            if (selectedFarmIdCode === '') {
+                showStatus("Please select a farm first.", "warning");
+                return;
+            }
+
+            if (mode === 'create') {
+                title.textContent = `Add New Panel to ${selectedFarmIdCode}`;
+                submitBtn.textContent = 'Create Panel';
+                form.dataset.mode = 'create';
+                form.dataset.deviceId = '';
+                form.dataset.panelId = '';
+                form.reset();
+                panelIdCodeInput.disabled = false;
+                panelIdCodeInput.required = true;
+            } else if (mode === 'edit' && panel) {
+                title.textContent = `Edit Device: ${panel.name}`;
+                submitBtn.textContent = 'Update Device';
+                form.dataset.mode = 'edit';
+                form.dataset.panelId = panel.id;
+
+                panelIdCodeInput.value = panel.panel_id_code;
+                panelIdCodeInput.disabled = true; // Device ID Code is immutable on edit
+                panelIdCodeInput.required = false;
+                
+                document.getElementById('device-selector').value = panel.name;
+                document.getElementById('panel-name').value = panel.name;
+                document.getElementById('panel-type').value = panel.type;
+                document.getElementById('panel-width').value = panel.config.width || '';
+                document.getElementById('panel-height').value = panel.config.height || '';
+                document.getElementById('panel-top').value = panel.config.top || '';
+                document.getElementById('panel-left').value = panel.config.left || '';
+            }
+
+            formContainer.classList.remove('hidden');
+            panelList.classList.add('hidden');
+            window.scrollTo(0, 0); // Scroll to form
+        }
+
+        // Call Device Id and Type on Panel Form
+        async function callDeviceDetail(deviceName){
+            const deviceIdCode = allDevices.find(device => device.name === deviceName).device_id_code;
+            const deviceType = allDevices.find(device => device.name === deviceName).type;
+            document.getElementById('dashboard-device-code-display').textContent = deviceIdCode;
+            document.getElementById('dashboard-device-type-display').textContent = deviceType;
+
+            // Populate Panel Type Selector
+            if (deviceType == "Sensor"){
+                document.getElementById('panel-type').innerHTML = PANEL_TYPES_SENSOR.map(type => `<option value="${type}">${type}</option>`).join('');
+            } else {
+                document.getElementById('panel-type').innerHTML = PANEL_TYPES_ACTUATOR.map(type => `<option value="${type}">${type}</option>`).join('');
+            }
+        }
+
+        // Handle Panel Form Submission
+        async function handlePanelFormSubmit(event) {
+            event.preventDefault();
+            
+            const form = event.currentTarget;
+            const isEdit = form.dataset.mode === 'edit';
+            const panelId = form.dataset.panelId;
+            const farmIdCode = form.dataset.farmIdCode;
+            const deviceName = document.getElementById('device-selector').value.trim();
+            const deviceIdCode = allDevices.find(device => device.name === deviceName).device_id_code;
+            const deviceType = allDevices.find(device => device.name === deviceName).type;
+            
+            const panelIdCode = document.getElementById('panel-id-code').value.trim();
+            const panelName = document.getElementById('panel-name').value.trim();
+            const panelType = document.getElementById('panel-type').value;
+            const panelWidth = document.getElementById('panel-width').value;
+            const panelHeight = document.getElementById('panel-height').value;
+            const panelTop = document.getElementById('panel-top').value;
+            const panelLeft = document.getElementById('panel-left').value;
+
+            const deviceTopic = `${farmIdCode}/${deviceIdCode}`;
+
+            if (!farmIdCode || !deviceIdCode || !panelName || !panelType || (!isEdit && !panelIdCode)) {
+                showStatus("Farm, Name, Type, and Device ID Code (for new devices) are required.", "warning");
+                return;
+            }
+            let payload = {
+                farm_id_code: farmIdCode,
+                device_id_code: deviceIdCode,
+                name: panelName,
+                type: panelType,
+                config: {
+                    top: panelTop,
+                    left: panelLeft,
+                    width: panelWidth,
+                    height: panelHeight
+                }
+            };
+            
+            let url = '';
+            let method = '';
+            
+            if (isEdit) {
+                // PUT for editing
+                url = `${API_BASE_URL}/panels/${panelId}`;
+                method = 'PUT';
+            } else {
+                // POST for creating
+                url = `${API_BASE_URL}/panels/create`; 
+                method = 'POST';
+                payload = { ...payload, panel_id_code: panelIdCode };
+            }
+
+            const data = await makeApiCall(url, method, payload);
+
+            if (data) {
+                const action = isEdit ? 'updated' : 'created';
+                showStatus(`Panel '${panelName}' successfully ${action}. Now refreshing list...`, "info");
+                
+                form.reset();
+                document.getElementById('panel-form-container').classList.add('hidden');
+                document.getElementById('panels-list').classList.remove('hidden');
+                
+                // --- FIX: Introduce a small delay after CREATING a new item ---
+                // This helps mitigate eventual consistency issues where the new item 
+                // isn't immediately available for the next fetch/query.
+                if (!isEdit) {
+                    await sleep(500); 
+                }
+                // --- END FIX ---
+                
+                // Refresh device list
+                await fetchDevices('dashboard-farm-selector');
+                showStatus(`Device '${name}' successfully ${action}.`, "success"); // Final succeess status
+                await fetchPanels();
+            }
+        }
+
+        // Handle Panel Deletion (Uses custom modal)
+        async function deletePanel(panelId, panelName) {
+            showConfirmModal(
+                'Confirm Panel Deletion',
+                `Are you sure you want to delete Panel "${panelName}"? This cannot be undone.`,
+                async () => {
+                    const url = `${API_BASE_URL}/panels/${panelId}/delete`;
+                    const data = await makeApiCall(url, 'POST', {panel_id: panelId});
+                    
+                    if (data) {
+                        showStatus(`Panel '${panelName}' deleted successfully.`, "success");
+                        await fetchDevices('dashboard-farm-selector');
+                        await fetchPanels();
+                    }
+                }
+            );
+        }
+
+        // --- UI Rendering and Event Handlers (unchanged logic) ---
+
+        function renderPanels(panels) {
+            panelsList.innerHTML = '';
+            
+            if (panels.length === 0) {
+                panelsList.innerHTML = '<p class="md:col-span-3 text-center text-gray-500 p-8 border-dashed border-2 border-gray-300 rounded-xl">No dashboard panels configured yet. Click "Add New Panel" to get started.</p>';
+                return;
+            }
+
+            panels.forEach(panel => {
+                const card = document.createElement('div');
+                card.id = `panel-card-${panel.id}`;
+                card.className = `panel-card p-1 rounded-xl border-l-4 ${
+                    panel.type === 'Line' ? 'border-blue-500 bg-white' :
+                    panel.type === 'Gauge' ? 'border-yellow-500 bg-white' :
+                    panel.type === 'Button' ? 'border-green-500 bg-white' :
+                    'border-red-500 bg-white'
+                }`;
+
+                card.innerHTML = `
+                    <div class="panel-card-header bg-gray-50 p-2 flex items-center justify-between border-b border-gray-100">
+                        <h3 class="text-xl font-bold text-gray-800">${panel.name}</h3>
+                        <div></div>
+                        <div class="space-x-1 flex items-center justify-between border-b">
+                            <!-- REMOVED "View History" button -->
+                            <button title="Edit Panel" class="text-blue-500 hover:text-blue-700 p-2 rounded-full hover:bg-blue-50 transition panel-edit-btn" data-action="edit-panel" data-id="${panel.id}">
+                                <i data-lucide="pencil" class="w-4 h-4"></i>
+                            </button>
+                            <button title="Delete Panel" class="text-red-500 hover:text-red-700 p-2 rounded-full hover:bg-red-50 transition panel-delete-btn" data-action="delete-panel" data-id="${panel.id}" data-name="${panel.name}">
+                                <i data-lucide="trash-2" class="w-4 h-4"></i>
+                            </button>
+                        </div>
+                    </div>                    
+                    <div id = "chart-card-${panel.id}" class="chart-container relative h-48 mb-4">
+                    </div>
+                `;
+                panelsList.appendChild(card);
+                const panelPath = `${panel.farm_id}/${panel.device_id}/${panel.panel_id_code}`;
+
+                if (panel.type === 'Line') {
+                    document.getElementById(`chart-card-${panel.id}`).innerHTML = `
+                    <canvas id="chart-panel-${panel.id}"></canvas> 
+                    `
+                    createLineChart(panelPath, `chart-panel-${panel.id}`,'Temperature (°C)', [
+                        { time: '2025-10-23 15:25:58', value: 25.5 }
+                    ]);
+                } else if (panel.type === 'Gauge') {
+                    document.getElementById(`chart-card-${panel.id}`).innerHTML = `
+                    <canvas id="chart-panel-${panel.id}"></canvas> 
+                    `
+                    createGaugeChart(panelPath, `chart-panel-${panel.id}`, 75, 100); 
+                } else if (panel.type === 'Button') {
+                    document.getElementById(`chart-card-${panel.id}`).innerHTML = 
+                    `<p class="text-sm font-medium text-gray-700 mt-3 mb-2 border-t pt-2">Control Actuator:</p>
+                    <div class="flex space-x-3">
+                    <button class="bg-green-600 hover:bg-green-700 text-white text-sm font-semibold py-2 px-4 rounded-lg flex items-center transition duration-200 shadow-md hover:shadow-lg" 
+                        onclick="controlDevice(${panel.id}, '${panel.device_id}', 1)">
+                        <i data-lucide="power" class="w-4 h-4 mr-1"></i> Activate
+                    </button>
+                    <button class="bg-red-600 hover:bg-red-700 text-white text-sm font-semibold py-2 px-4 rounded-lg flex items-center transition duration-200 shadow-md hover:shadow-lg" 
+                        onclick="controlDevice(${panel.id}, '${panel.device_id}', -1)">
+                        <i data-lucide="power-off" class="w-'4 h-4 mr-1"></i> Deactivate
+                    </button>
+                    </div>`;
+                } else if (panel.type === 'Slider') {
+                    document.getElementById(`chart-card-${panel.id}`).innerHTML = 
+                    `<label class="text-sm font-medium text-gray-700 mt-3 mb-2 border-t pt-2" for="volume">Volume:</label>
+                    <input class="text-sm font-medium text-gray-700 mt-3 mb-2 border-t pt-0" type="range" id="volume" name="volume" min="0" max="100" value="50">`
+                }
+                const panelWidth = panel.config.width;
+                const panelHeight = panel.config.height;
+                const chartWidth = parseInt(panelWidth)-40;
+                const chartHeight = parseInt(panelHeight)-60;
+                const panelTop = parseInt(panel.config.top)+150;
+                const panelLeft = parseInt(panel.config.left)+25;
+                const panelCardStyle = document.getElementById(`panel-card-${panel.id}`).style;
+                const chartCardStyle = document.getElementById(`chart-card-${panel.id}`).style;
+                if (panelWidth) {
+                    panelCardStyle.width = `${panelWidth}px`;
+                    chartCardStyle.width = `${chartWidth}px`;
+                } else {
+                    panelCardStyle.width = `300px`;
+                    chartCardStyle.width = `260px`;
+                }
+                if (panelHeight) {
+                    panelCardStyle.height = `${panelHeight}px`;
+                    chartCardStyle.height = `${chartHeight}px`;
+                } else {
+                    panelCardStyle.height = `150px`;
+                    chartCardStyle.height = `90px`;
+                }
+                if (panelTop) {
+                    panelCardStyle.top = `${panelTop}px`;
+                } else {
+                    panelCardStyle.top = `150px`;
+                }
+                if (panelLeft) {
+                    panelCardStyle.left = `${panelLeft}px`;
+                } else {
+                    panelCardStyle.left = `25px`;
+                }
+            });
+        }
+
+        // Handle Device Control (Pump)
+        async function controlDevice(deviceDbId, deviceIdCode, command) {
+            // const farmSelector = document.getElementById('device-farm-selector');
+            // const farmIdCode = farmSelector.value;
+            console.log(deviceDbId);
+            console.log(deviceIdCode);
+            
+            const payload = {
+                // farm_id: farmIdCode,
+                device_id: deviceIdCode,
+                pump_id: deviceDbId, // Using DB ID as pump_id as per original script logic
+                command: command,
+                timestamp: new Date().toISOString()
+            };
+            
+            const url = `${API_BASE_URL}/devices/${deviceDbId}/control`;
+            const data = await makeApiCall(url, 'POST', payload);
+
+            if (data) {
+                showStatus(`Command to turn pump ${command} on device ${deviceIdCode} published!`, "success");
+            }
+        }
+        
+        // --- INITIALIZATION ---
+        document.addEventListener('DOMContentLoaded', () => {
+            lucide.createIcons();
+//            setupStaticListeners();
+
+            function startUserSession(userId, username) {
+                if (userId && username) {
+                    document.getElementById('dashboard-username').textContent = username;
+                    switchView('farm-management-view', true);
+
+                    // This is the CRITICAL call, now wrapped in the reusable function
+                    console.log("Setting up real-time data listeners from Event Listener for user:", userId);
+                }
+            }
+
+            // Set initial view based on local storage presence
+            if (currentUserId && currentUsername) {
+                startUserSession(currentUserId, currentUsername);
+
+            } else {
+                switchView('auth-view', false);
+            }
+            
+            // Global event listener for Farm Management List actions (Edit/Delete)
+            document.getElementById('farms-list').addEventListener('click', (e) => {
+                const target = e.target.closest('button');
+                if (!target) return;
+
+                const action = target.dataset.action;
+                const id = parseInt(target.dataset.id, 10);
+                const farm = allFarms.find(f => f.id === id);
+
+                if (action === 'edit-farm' && farm) {
+                    showFarmForm('edit', farm);
+                } else if (action === 'delete-farm' && farm) {
+                    showConfirmModal(
+                        'Confirm Farm Deletion',
+                        `Are you sure you want to delete farm "${farm.name}" and all its associated devices? This cannot be undone.`,
+                        () => deleteFarm(farm.id, farm.name)
+                    );
+                }
+            });
+
+            // Global event listener for Device Management List actions (Edit/Delete)
+            document.getElementById('devices-list').addEventListener('click', (e) => {
+                const target = e.target.closest('button');
+                if (!target) return;
+
+                const action = target.dataset.action;
+                const id = parseInt(target.dataset.id, 10);
+                const device = allDevices.find(d => d.id === id);
+                const deviceName = target.dataset.name;
+
+                if (action === 'edit-device' && device) {
+                    showDeviceForm('edit', device);
+                } else if (action === 'delete-device' && id) {
+                    deleteDevice(id, deviceName);
+                }
+            });
+
+            // Global event listener for Panel Management List actions (Edit/Delete)
+            document.getElementById('panels-list').addEventListener('click', (e) => {
+                const target = e.target.closest('button');
+                if (!target) return;
+
+                const action = target.dataset.action;
+                const id = parseInt(target.dataset.id, 10);
+                const panel = allPanels.find(p => p.id === id);
+                const panelName = target.dataset.name;
+                if (action === 'edit-panel' && panel) {
+                    showPanelForm('edit', panel);
+                } else if (action === 'delete-panel' && id) {
+                    deletePanel(id, panelName);
+                }
+            });
+            
+            // Setup listener for Add Device button
+            document.getElementById('add-device-btn').onclick = () => {
+                showDeviceForm('create');
+            };
+
+            // Setup listener for Add Panel button
+            document.getElementById('add-panel-btn').onclick = () => {
+                showPanelForm('create');
+            };
+        });
+
+        // =========================================================================
+        // FIX: EXPLICITLY EXPOSE FUNCTIONS TO WINDOW FOR INLINE ONCLICK/ONSUBMIT
+        // =========================================================================
+        // When using <script type="module">, functions are module-scoped
+        // and must be explicitly exported to the global 'window' object 
+        // for inline event handlers (like onclick/onsubmit in the HTML body) to find them.
+        window.switchView = switchView;
+        window.toggleAuthMode = toggleAuthMode;
+        window.handleAuth = handleAuth;
+        window.handleLogout = handleLogout;
+        window.handleFarmFormSubmit = handleFarmFormSubmit;
+        window.showFarmForm = showFarmForm;
+        window.handleDeviceFormSubmit = handleDeviceFormSubmit;
+        window.handlePanelFormSubmit = handlePanelFormSubmit;
+        window.showDeviceForm = showDeviceForm;
+        window.showPanelForm = showPanelForm;
+        window.fetchDevices = fetchDevices;
+        window.fetchPanels = fetchPanels;
+        window.renderPanels = renderPanels;
+        window.callDeviceDetail = callDeviceDetail;
+        window.controlDevice = controlDevice;
+        // =========================================================================
+    </script>
+</body>
+</html>
