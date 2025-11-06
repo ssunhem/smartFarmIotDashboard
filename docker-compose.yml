@@ -48,6 +48,8 @@ services:
     restart: always
     volumes:
       - ./telegraf/telegraf.conf:/etc/telegraf/telegraf.conf:ro
+    environment:
+      - INFLUX_BUCKET=sensor_data
     depends_on:
       - mosquitto
       - influxdb
