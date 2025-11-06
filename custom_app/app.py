@@ -3,6 +3,7 @@ import json
 import eventlet
 import logging
 import sys
+import time
 
 from datetime import datetime
 from flask import Flask, request, jsonify
@@ -76,7 +77,7 @@ class User(db.Model):
     __tablename__ = 'users'
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80), unique=True, nullable=False)
-    email = db.Column(db.String(120), unique=True, nullable=False)
+    tel = db.Column(db.String(120), unique=True, nullable=False)
     password_hash = db.Column(db.String(128), nullable=False)
     
     farms = db.relationship('Farm', backref='owner', lazy=True, cascade="all, delete-orphan")
@@ -98,9 +99,14 @@ class Farm(db.Model):
     location = db.Column(db.String(100))
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
 
+    viewer = db.Column(db.Text, default='{}')   # {viewer_id: viewer_name}
+
     __table_args__ = (db.UniqueConstraint('user_id', 'farm_id_code', name='_user_farm_uc'),)
     
     devices = db.relationship('Device', backref='farm', lazy=True, cascade="all, delete-orphan")
+
+    def share_farm(self):
+        return self.viewer.split(" ")
 
     def to_dict(self):
         return {
@@ -108,7 +114,8 @@ class Farm(db.Model):
             'farm_id_code': self.farm_id_code,
             'name': self.name,
             'location': self.location,
-            'user_id': self.user_id
+            'user_id': self.user_id,
+            'viewer': self.viewer
         }
 
 class Device(db.Model):
@@ -118,7 +125,7 @@ class Device(db.Model):
     type = db.Column(db.String(50), nullable=False) # e.g., 'Sensor', 'Actuator'
     name = db.Column(db.String(100), nullable=False)
     location = db.Column(db.String(100))
-    farm_id = db.Column(db.Integer, db.ForeignKey('farms.id'), nullable=False)
+    farm_id = db.Column(db.String(20), db.ForeignKey('farms.farm_id_code'), nullable=False)
     
     __table_args__ = (db.UniqueConstraint('farm_id', 'device_id_code', name='_farm_device_uc'),)
 
@@ -137,7 +144,7 @@ class DashboardPanel(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     
     # Foreign key linking the panel to the User who owns it (mandatory)
-    farm_id = db.Column(db.Integer, db.ForeignKey('farms.id'), nullable=False)
+    farm_id = db.Column(db.String(20), db.ForeignKey('farms.farm_id_code'), nullable=False)
     device_id = db.Column(db.Integer, db.ForeignKey('devices.device_id_code'), nullable=False)
     # Panel display information
     panel_id_code = db.Column(db.String(20), nullable=False)
@@ -145,7 +152,7 @@ class DashboardPanel(db.Model):
     type = db.Column(db.String(20), nullable=False) # e.g., 'LineChart', 'Gauge', 'Button'
     
     # Store arbitrary configuration data (e.g., axis ranges, colors, button topics) as JSON text
-    config_json = db.Column(db.Text, default='{}')
+    config_json = db.Column(db.Text, default='[]')
 
     # Optional: Define a relationship back to the User model if needed
     # owner = db.relationship('User', backref='dashboard_panels', lazy=True)
@@ -192,37 +199,41 @@ def handle_messages(client, userdata, message):
     topic = message.topic
     payload = message.payload.decode()
     
-    # Example topic format: 'farm/FARM_A/TEMP_01/PAN001'
+    # Example topic format: 'farm/FARM_A/TEMP_01/'
     
     try:
         # FIX: Changed topic_split to topic.split
         topic_parts = topic.split('/')
         
-        # Expecting farm/telemetry/FARM_ID/DEVICE_ID/SENSOR_TYPE
-        if len(topic_parts) < 5 or topic_parts[1] not in ['telemetry', 'status']:
+        # Expecting farm/telemetry/FARM_ID/DEVICE_ID/
+        if len(topic_parts) < 4 or topic_parts[1] not in ['telemetry', 'status']:
             app.logger.info(f"MQTT Topic format invalid or not telemetry/status: {topic}")
             return # Exit if topic is not the expected format
 
-        farm_id = topic_parts[2] 
+        farm_id_code = topic_parts[2] 
         device_id_code = topic_parts[3] 
-        panel_id_code = topic_parts[4] # e.g., temperature, humidity, pump/1
 
         telemetry_data = json.loads(payload)
 
         # 1. Extract key value for real-time update
         value = telemetry_data.get('value', payload) # Use raw payload if 'value' is missing
+        unit = telemetry_data.get('unit', payload)
+        timestamp = datetime.now()
 
         # 2. Use SocketIO to push the data to the connected frontend clients
         sending_payload = {
-                'farm_id': farm_id,
+                'farm_id': farm_id_code,
                 'device_id_code': device_id_code,
-                'panel_id_code': panel_id_code,
                 'value': value,
-                'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                'timestamp': timestamp.strftime("%Y-%m-%d %H:%M:%S")
             }
-        socketio.emit('new_telemetry', sending_payload )
-        
+        socketio.emit('new_telemetry', sending_payload)
+
         app.logger.info(f"MQTT Data received on topic '{topic}' with the message '{sending_payload}'and broadcast to SocketIO.")
+
+        data_to_save = 'farm,farm_id='+farm_id_code+',device_id='+device_id_code+',label='+unit+' value='+str(value)+' '+str(int(time.time_ns()))
+        mqtt.publish('farm/sensor', data_to_save, qos=1)
+        app.logger.info(f"Sending data to telegraf: " + data_to_save)
 
     except json.JSONDecodeError:
         app.logger.info(f"Error decoding JSON payload on topic {topic}")
@@ -271,13 +282,72 @@ def init_db():
 
         # Create a default test user if none exists for easy testing
         if not User.query.first():
-            test_user = User(username='testuser', email='test@example.com')
+            test_user = User(username='testuser', tel='0123456789')
             test_user.set_password('password')
             db.session.add(test_user)
+
+            test_farm = Farm(farm_id_code='FARM000T', name='Test Farm', user_id=1, viewer='0987654321')
+            db.session.add(test_farm)
+
+            test_device1 = Device(device_id_code='DEV000T', name='Test Temperature', type='เซ็นเซอร์', farm_id='FARM000T')
+            db.session.add(test_device1)
+            test_device2 = Device(device_id_code='DEV001T', name='Test Humidity', type='เซ็นเซอร์', farm_id='FARM000T')
+            db.session.add(test_device2)
+            test_device3 = Device(device_id_code='DEV002T', name='Test Moisture', type='เซ็นเซอร์', farm_id='FARM000T')
+            db.session.add(test_device3)
+            test_device4 = Device(device_id_code='DEV003T', name='Test Pump Manual', type='อุปกรณ์ขับ', farm_id='FARM000T')
+            db.session.add(test_device4)
+            test_device5 = Device(device_id_code='DEV004T', name='Test Pump Timer', type='อุปกรณ์ขับ', farm_id='FARM000T')
+            db.session.add(test_device5)
+            test_device6 = Device(device_id_code='DEV005T', name='Test Pump Auto', type='อุปกรณ์ขับ', farm_id='FARM000T')
+            db.session.add(test_device6)
+
+            test_panel1 = DashboardPanel(farm_id='FARM000T', device_id='DEV000T', panel_id_code='PAN000T', name='Temperature Gauge', type='เกจ์', config_json='' \
+            '{"unit": "C", ' \
+            '"mode": "ต่ำสุด-สูงสุด", "setting1": "20", "setting2": "50",' \
+            '"status": "1",' \
+            '"top": "0", "left": "0", "width": "400", "height": "300"}')
+            db.session.add(test_panel1)
+            test_panel2 = DashboardPanel(farm_id='FARM000T', device_id='DEV001T', panel_id_code='PAN001T', name='Humidity Gauge', type='เกจ์', config_json='' \
+            '{"unit": "%", ' \
+            '"mode": "ต่ำสุด-สูงสุด", "setting1": "0", "setting2": "100",' \
+            '"status": "1",' \
+            '"top": "0", "left": "450", "width": "400", "height": "300"}')
+            db.session.add(test_panel2)
+            test_panel3 = DashboardPanel(farm_id='FARM000T', device_id='DEV002T', panel_id_code='PAN002T', name='Moisture Gauge', type='เกจ์', config_json='' \
+            '{"unit": "%", ' \
+            '"mode": "ต่ำสุด-สูงสุด", "setting1": "0", "setting2": "100",' \
+            '"status": "1",' \
+            '"top": "0", "left": "900", "width": "400", "height": "300"}')
+            db.session.add(test_panel3)
+            test_panel4 = DashboardPanel(farm_id='FARM000T', device_id='DEV002T', panel_id_code='PAN003T', name='Moisture History', type='เส้น', config_json='' \
+            '{"unit": "%", ' \
+            '"mode": "ต่ำสุด-สูงสุด", "setting1": "35", "setting2": "45",' \
+            '"status": "1",' \
+            '"top": "350", "left": "0", "width": "1300", "height": "650"}')
+            db.session.add(test_panel4)
+            test_panel5 = DashboardPanel(farm_id='FARM000T', device_id='DEV003T', panel_id_code='PAN004T', name='Pump Manual', type='ปุ่ม', config_json='' \
+            '{"unit": "", ' \
+            '"mode": "manual",' \
+            '"status": "-1",' \
+            '"top": "0", "left": "1350", "width": "300", "height": "300"}')
+            db.session.add(test_panel5)
+            test_panel6 = DashboardPanel(farm_id='FARM000T', device_id='DEV004T', panel_id_code='PAN005T', name='Pump Timer', type='ปุ่ม', config_json='' \
+            '{"unit": "", ' \
+            '"mode": "timer", "setting1": "08:00:00", "setting2": "10", "setting3": "วินาที", "setting4": ["sun", "mon", "tue", "wed", "thu", "fri", "sat"],' \
+            '"status": "-1",' \
+            '"top": "350", "left": "1350", "width": "300", "height": "300"}')
+            db.session.add(test_panel6)
+            test_panel7 = DashboardPanel(farm_id='FARM000T', device_id='DEV005T', panel_id_code='PAN006T', name='Pump Auto', type='ปุ่ม', config_json='' \
+            '{"unit": "", ' \
+            '"mode": "auto", "setting1": "35", "setting2": "น้อยกว่า","feedback": "DEV002T",' \
+            '"status": "-1",' \
+            '"top": "700", "left": "1350", "width": "300", "height": "300"}')
+            db.session.add(test_panel7)
             db.session.commit()
+
             app.logger.info("Default test user 'testuser' created (ID: 1).")
 
-# Call the initialization function here so it runs when Gunicorn preloads the app
 init_db()
 
 # --- API Routes ---
@@ -294,19 +364,19 @@ def get_status():
 def register_user():
     data = request.get_json()
     username = data.get('username')
-    email = data.get('email')
+    tel = data.get('tel')
     password = data.get('password')
 
-    if not all([username, email, password]):
-        return jsonify({"error": "Missing username, email, or password"}), 400
+    if not all([username, tel, password]):
+        return jsonify({"error": "Missing username, tel no., or password"}), 400
 
     if User.query.filter_by(username=username).first():
         return jsonify({"error": "Username already exists"}), 409
     
-    if User.query.filter_by(email=email).first():
-        return jsonify({"error": "Email already registered"}), 409
+    if User.query.filter_by(tel=tel).first():
+        return jsonify({"error": "Telephone already registered"}), 409
 
-    new_user = User(username=username, email=email)
+    new_user = User(username=username, tel=tel)
     new_user.set_password(password)
 
     try:
@@ -340,6 +410,27 @@ def login_user():
         }), 200
     else:
         return jsonify({"error": "Invalid username or password"}), 401
+    
+@app.route('/api/v1/users/change', methods=['PUT'])
+@require_auth
+def change_password(user, data):
+    username = data.get('username')
+    new_password = data.get('new_password')
+
+    user = User.query.filter_by(username=username).first()
+    if username==user.username:
+        user.set_password(new_password)
+
+    try:
+        db.session.commit()
+        return jsonify({
+            "message": "Changed password successfully",
+            "user": username
+        }), 200
+    except Exception as e:
+        db.session.rollback()
+        app.logger.info(f"Database error during password changing: {e}")
+        return jsonify({"error": "Internal server error during password changing"}), 500
 
 # ----------------------------------------------------
 # Farm Management (CRUD - No change to logic)
@@ -349,8 +440,13 @@ def login_user():
 @require_auth
 def list_farms(user, data):
     farms = Farm.query.filter_by(user_id=user.id).all()
-    return jsonify({"farms": [f.to_dict() for f in farms]}), 200
-
+    sharedFarms = []
+    for f in Farm.query.all():
+        if user.tel in f.share_farm():
+            sharedFarms.append(f)
+#    sharedFarms = Farm.query.filter(Farm.viewer.contains(user.username)).all()
+    return jsonify({"farms": [f.to_dict() for f in farms],
+                    "sharedFarms": [sf.to_dict() for sf in sharedFarms]}), 200
 
 @app.route('/api/v1/farms/create', methods=['POST'])
 @require_auth
@@ -358,6 +454,7 @@ def create_farm(user, data):
     farm_id_code = data.get('farm_id_code')
     name = data.get('name')
     location = data.get('location')
+    viewer = data.get('viewer')
 
     if not all([farm_id_code, name]):
         return jsonify({"error": "Missing farm_id_code or name"}), 400
@@ -369,7 +466,8 @@ def create_farm(user, data):
         farm_id_code=farm_id_code,
         name=name,
         location=location,
-        user_id=user.id
+        user_id=user.id,
+        viewer=viewer
     )
 
     try:
@@ -388,12 +486,14 @@ def create_farm(user, data):
 @app.route('/api/v1/farms/<int:farm_db_id>', methods=['PUT'])
 @require_auth
 def update_farm(user, data, farm_db_id):
-    farm = Farm.query.filter_by(id=farm_db_id, user_id=user.id).first()
+    farm_id_code = data.get('farm_id_code')
+    farm = Farm.query.filter_by(farm_id_code=farm_id_code, user_id=user.id).first()
     if not farm:
         return jsonify({"error": "Farm not found or access denied."}), 404
 
     farm.name = data.get('name', farm.name)
     farm.location = data.get('location', farm.location)
+    farm.viewer = data.get('viewer', farm.viewer)
     
     try:
         db.session.commit()
@@ -410,7 +510,8 @@ def update_farm(user, data, farm_db_id):
 @app.route('/api/v1/farms/<int:farm_db_id>/delete', methods=['POST'])
 @require_auth
 def delete_farm(user, data, farm_db_id):
-    farm = Farm.query.filter_by(id=farm_db_id, user_id=user.id).first()
+    farm_id_code = data.get('farm_id_code')
+    farm = Farm.query.filter_by(farm_id_code=farm_id_code, user_id=user.id).first()
     if not farm:
         return jsonify({"error": "Farm not found or access denied."}), 404
 
@@ -440,7 +541,7 @@ def get_devices(user, data):
     if not farm:
         return jsonify({"error": "Farm not found or access denied."}), 404
     
-    devices = Device.query.filter_by(farm_id=farm.id).all()
+    devices = Device.query.filter_by(farm_id=farm.farm_id_code).all()
     
     return jsonify({"devices": [d.to_dict() for d in devices]}), 200
 
@@ -461,7 +562,7 @@ def create_device(user, data):
     if not farm:
         return jsonify({"error": "Target farm not found or access denied."}), 404
 
-    if Device.query.filter_by(farm_id=farm.id, device_id_code=device_id_code).first():
+    if Device.query.filter_by(farm_id=farm.farm_id_code, device_id_code=device_id_code).first():
         return jsonify({"error": f"Device ID '{device_id_code}' already exists in farm '{farm_id_code}'."}), 409
 
     new_device = Device(
@@ -469,7 +570,7 @@ def create_device(user, data):
         type=device_type,
         name=name,
         location=location,
-        farm_id=farm.id
+        farm_id=farm_id_code
     )
 
     try:
@@ -492,7 +593,7 @@ def update_device(user, data, device_db_id):
     if not device:
         return jsonify({"error": "Device not found."}), 404
 
-    farm = Farm.query.filter_by(id=device.farm_id, user_id=user.id).first()
+    farm = Farm.query.filter_by(farm_id_code=device.farm_id, user_id=user.id).first()
     if not farm:
         return jsonify({"error": "Access denied. You do not own this device's farm."}), 403
 
@@ -515,11 +616,12 @@ def update_device(user, data, device_db_id):
 @app.route('/api/v1/devices/<int:device_db_id>/delete', methods=['POST'])
 @require_auth
 def delete_device(user, data, device_db_id):
-    device = Device.query.filter_by(id=device_db_id).first()
+    device_id_code = data.get('device_id_code')
+    device = Device.query.filter_by(device_id_code=device_id_code).first()
     if not device:
         return jsonify({"error": "Device not found."}), 404
         
-    farm = Farm.query.filter_by(id=device.farm_id, user_id=user.id).first()
+    farm = Farm.query.filter_by(farm_id_code=device.farm_id, user_id=user.id).first()
     if not farm:
         return jsonify({"error": "Access denied. You do not own this device's farm."}), 403
 
@@ -546,13 +648,18 @@ def get_panels(user, data):
     if not farm_id_code:
         return jsonify({"error": "Missing 'farm_id_code' in request body."}), 400
     
-    farm = Farm.query.filter_by(user_id=user.id, farm_id_code=farm_id_code).first()
-    
-    if not farm:
-        return jsonify({"error": "Farm not found or access denied."}), 404
+    farm = Farm.query.filter_by(farm_id_code=farm_id_code, user_id=user.id).first()
+    sharedFarms = Farm.query.filter(Farm.viewer.contains(user.tel), Farm.farm_id_code == farm_id_code).first()
 
-    panels = DashboardPanel.query.filter_by(farm_id=farm.id).all()
-    return jsonify([panel.to_dict() for panel in panels]), 200
+    if farm:
+        panels = DashboardPanel.query.filter_by(farm_id=farm.farm_id_code).all()
+        return jsonify([panel.to_dict() for panel in panels])
+    elif sharedFarms:
+        sharedPanels = DashboardPanel.query.filter_by(farm_id=sharedFarms.farm_id_code).all()
+        return jsonify([panel.to_dict() for panel in sharedPanels])
+    else:
+        return jsonify({"error": "Farm not found or access denied."}), 404
+        
 
 @app.route('/api/v1/panels/create', methods=['POST'])
 @require_auth
@@ -571,19 +678,19 @@ def create_panel(user, data):
     if not farm:
         return jsonify({"error": "Target farm not found or access denied."}), 404
 
-    device = Device.query.filter_by(farm_id=farm.id, device_id_code=device_id_code).first()
+    device = Device.query.filter_by(farm_id=farm.farm_id_code, device_id_code=device_id_code).first()
     if not farm:
         return jsonify({"error": "Target device not found or access denied."}), 404
 
-    if DashboardPanel.query.filter_by(farm_id=farm.id, device_id=device_id_code, panel_id_code=panel_id_code).first():
+    if DashboardPanel.query.filter_by(farm_id=farm.farm_id_code, device_id=device_id_code, panel_id_code=panel_id_code).first():
         return jsonify({"error": f"Device ID '{panel_id_code}' already exists in farm '{panel_id_code}'."}), 409
 
     new_panel = DashboardPanel(
         panel_id_code=panel_id_code,
         name=name,
         type=panel_type,
-        farm_id=farm.id,
-        device_id=device.id,
+        farm_id=farm_id_code,
+        device_id=device_id_code,
         config_json=config
     )
     
@@ -609,7 +716,7 @@ def update_panel(user, data, panel_id):
     if not panel:
         return jsonify({"error": "Panel not found."}), 404
     
-    farm = Farm.query.filter_by(id=panel.farm_id, user_id=user.id).first()
+    farm = Farm.query.filter_by(farm_id_code=panel.farm_id, user_id=user.id).first()
     if not farm:
         return jsonify({"error": "Access denied. You do not own this device's farm."}), 403
 
@@ -633,7 +740,7 @@ def delete_panel(user, data, panel_id):
     if not panel:
         return jsonify({"error": "Panel not found."}), 404
         
-    farm = Farm.query.filter_by(id=panel.farm_id, user_id=user.id).first()
+    farm = Farm.query.filter_by(farm_id_code=panel.farm_id, user_id=user.id).first()
     if not farm:
         return jsonify({"error": "Access denied. You do not own this device's farm."}), 403
 
@@ -646,16 +753,17 @@ def delete_panel(user, data, panel_id):
 # ----------------------------------------------------
 
 # 3. API Endpoint to Send Commands (From server to devices)
-@app.route('/api/v1/devices/<string:device_id_code>/control', methods=['POST'])
+@app.route('/api/v1/devices/control', methods=['POST'])
 @require_auth
-def send_device_command(user, data, device_id_code):
+def send_device_command(user, data):
     # Ensure the user owns the device before sending a command (security check)
     
     command = data.get('command') # e.g., 'PUMP_ON', 'PUMP_OFF'
-    device_id = data.get('device_id')
+    device_id_code = data.get('device_id')
+    farm_id_code = data.get('farm_id_code')
     
-    # Topic format for commands: 'commands/DEV001/pump'
-    command_topic = f'commands/{device_id}/actuator' 
+    # Topic format for commands: 'commands/FARM000/DEV001/pump'
+    command_topic = f'farm/commands/{farm_id_code}/{device_id_code}' 
 
     if not command:
         return jsonify({"error": "Missing 'command' parameter."}), 400
