@@ -1,4 +1,4 @@
-version: '3.8'
+version: '3.3'
 
 services:
   # ------------------------------------------------------------------
@@ -38,6 +38,25 @@ services:
       - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=my-secret-token # CRITICAL: MUST match Telegraf's token
     volumes:
       - influxdb_data:/var/lib/influxdb2
+  
+  postgres_db:
+    image: postgres:15-alpine
+    container_name: smartfarm_postgres
+    restart: always
+    ports:
+      - "5432:5432" 
+    environment:
+      POSTGRES_USER: smartfarm_user
+      POSTGRES_PASSWORD: a_very_secure_db_password # <-- SECURE ME
+      POSTGRES_DB: sensor_metrics_db
+    # CRITICAL: Maps container data path to a named volume for persistence
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   # ------------------------------------------------------------------
   # 3. DATA INGESTER (Telegraf)
@@ -72,20 +91,28 @@ services:
       # Ensure this host name matches the service name above
       - MQTT_BROKER_URL=mosquitto
       - APP_PORT=5000
+      - DB_URL=postgresql://smartfarm_user:a_very_secure_db_password@postgres_db:5432/sensor_metrics_db
       
     # Fixed Command: Waits for Mosquitto, applies DNS fix, then starts Gunicorn
     command: |
-      /bin/sh -c '
-        echo "Waiting for mosquitto:1883 to accept connections..."
+        /bin/sh -c '
+        echo "Waiting for Mosquitto:1883 to accept connections..."
         while ! nc -z mosquitto 1883; do   
           sleep 0.5;
         done
-        echo "Mosquitto is confirmed up. Starting Manager via SocketIO server..."
+        echo "Waiting for PostgreSQL:5432 to accept connections..."
+        while ! nc -z postgres_db 5432; do   
+          sleep 0.5;
+        done
+        echo "All dependencies up. Starting Manager via SocketIO server..."
         export EVENTLET_NO_GREENDNS=yes;
         python app.py
-      '
+        '
+
+    # CRITICAL: Now waits for both Mosquitto (start) and Postgres (healthy)
     depends_on:
       - mosquitto
+      - postgres_db
     # command: ["flask", "run", "--host", "0.0.0.0", "--port", "5000"]
 
 # ------------------------------------------------------------------
@@ -94,3 +121,7 @@ services:
 volumes:
   influxdb_data:
   custom_app_data:  # New volume for the app's database
+  postgres_data:
+    # Docker will automatically create and manage this named volume, 
+    # ensuring your database data persists even if the container is removed.
+    external: false
