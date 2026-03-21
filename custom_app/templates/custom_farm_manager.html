@@ -1,0 +1,2134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart Farm Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+<!--     <script src="realtime_updates.js"></script> -->
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f7f9fb;
+        }
+        .nav-bar { background-color: #d5b850; color: white;}
+        .status-bar-info { background-color: #2563eb; color: white; }
+        .status-bar-success { background-color: #10b981; color: white; }
+        .status-bar-warning { background-color: #fbbf24; color: black; }
+        .status-bar-error { background-color: #ef4444; color: white; }
+        .card { border-radius: 0.75rem; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05); }
+        .device-card-header { display: flex; justify-content: space-between; align-items: center; padding: 1rem; border-bottom: 1px solid #f3f4f6; }
+        .custom-checkbox {
+            box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.5); /* Violet-600 shadow */
+            outline: none;
+        }
+    </style>
+</head>
+<body class="min-h-screen">
+
+    <!-- Status Bar (Toast Notification) -->
+    <div id="status-bar" class="hidden status-bar-info fixed top-4 right-4 m-4 p-3 rounded-lg shadow-xl z-50 text-sm transition-all duration-300"></div>
+
+    <!-- Confirmation Modal -->
+    <div id="confirmation-modal" class="hidden fixed inset-0 bg-gray-900 bg-opacity-50 z-50 flex items-center justify-center">
+        <div class="bg-white p-6 rounded-xl shadow-2xl w-full max-w-sm">
+            <h3 id="confirm-title" class="text-xl font-bold text-gray-900 mb-3">ยืนยันกิจกรรม</h3>
+            <p id="confirm-message" class="text-gray-700 mb-6">คุณตกลงดำเนินการต่อใช่หรือไม่</p>
+            <div class="flex justify-end space-x-3">
+                <button id="confirm-cancel-btn" class="px-4 py-2 bg-gray-200 text-gray-700 font-medium rounded-lg hover:bg-gray-300 transition">ยกเลิก</button>
+                <button id="confirm-action-btn" class="px-4 py-2 bg-red-600 text-white font-medium rounded-lg hover:bg-red-700 transition">ยืนยัน</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Global Navigation -->
+    <nav id="nav-bar" class="hidden nav-bar shadow-md sticky top-0 z-40">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between h-16">
+                <div class="flex items-center">
+                    <div class="flex-shrink-0 flex items-center text-xl font-bold text-green-600">
+                        <img src="{{url_for('static', filename='icon.png')}}" width="100" height="100"/> <!-- SmartFarm -->
+                        IoT Dashboard
+                    </div>
+                    <div class="hidden sm:ml-6 sm:flex sm:space-x-4">
+                        <a href="#" onclick="switchView('profile-view')" class="text-white hover:border-gray-300 hover:text-gray-700 inline-flex items-center px-1 pt-1 border-b-2 rounded-md text-sm font-medium transition duration-150">
+                            <i data-lucide="person-standing" class="w-4 h-4 mr-1"></i> จัดการบัญชี
+                        </a>
+                        <a href="#" onclick="switchView('farm-management-view')" class="text-white hover:border-gray-300 hover:text-gray-700 inline-flex items-center px-1 pt-1 border-b-2 rounded-md text-sm font-medium transition duration-150">
+                            <i data-lucide="building" class="w-4 h-4 mr-1"></i> จัดการไร่สวน
+                        </a>
+                        <a href="#" onclick="switchView('device-management-view')" class="text-white hover:border-gray-300 hover:text-gray-700 inline-flex items-center px-1 pt-1 border-b-2 rounded-md text-sm font-medium transition duration-150">
+                            <i data-lucide="thermometer" class="w-4 h-4 mr-1"></i> จัดการอุปกรณ์
+                        </a>
+                        <a href="#" onclick="switchView('dashboard-view')" class="text-white hover:border-gray-300 hover:text-gray-700 inline-flex items-center px-1 pt-1 border-b-2 rounded-md text-sm font-medium transition duration-150">
+                            <i data-lucide="monitor-cloud" class="w-4 h-4 mr-1"></i> แสดงผลข้อมูล!
+                        </a>
+                    </div>
+                </div>
+                <div class="flex items-center">
+                    <button onclick="handleLogout()" class="hidden sm:flex text-red-500 hover:text-red-500 flex items-center text-sm font-medium transition duration-150">
+                        <i data-lucide="log-out" class="w-4 h-4 mr-1"></i> ออกจากระบบ
+                    </button>
+                    <button id="mobile-menu-toggle" class="sm:hidden p-2 rounded-md text-white hover:bg-green-600 focus:outline-none" aria-label="Toggle navigation menu">
+                        <i data-lucide="menu" id="menu-icon" class="w-6 h-6"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <div id="mobile-menu" class="hidden sm:hidden bg-green-800 pb-3">
+            <div class="px-2 pt-2 space-y-1">
+                <a href="#" onclick="switchView('profile-view')" class="text-white hover:bg-green-600 block px-3 py-2 rounded-md text-base font-medium">
+                    <i data-lucide="person-standing" class="w-4 h-4 mr-2 inline-block"></i> จัดการบัญชี
+                </a>
+                <a href="#" onclick="switchView('farm-management-view')" class="text-white hover:bg-green-600 block px-3 py-2 rounded-md text-base font-medium">
+                    <i data-lucide="building" class="w-4 h-4 mr-2 inline-block"></i> จัดการไร่สวน
+                </a>
+                <a href="#" onclick="switchView('device-management-view')" class="text-white hover:bg-green-600 block px-3 py-2 rounded-md text-base font-medium">
+                    <i data-lucide="thermometer" class="w-4 h-4 mr-2 inline-block"></i> จัดการอุปกรณ์
+                </a>
+                <a href="#" onclick="switchView('dashboard-view')" class="text-white hover:bg-green-600 block px-3 py-2 rounded-md text-base font-medium">
+                    <i data-lucide="monitor-cloud" class="w-4 h-4 mr-2 inline-block"></i> แสดงผลข้อมูล!
+                </a>
+                <!-- Mobile Logout Button -->
+                <button onclick="handleLogout()" class="w-full text-left text-red-300 hover:bg-green-600 hover:text-red-100 block px-3 py-2 rounded-md text-base font-medium transition duration-150 mt-2">
+                    <i data-lucide="log-out" class="w-4 h-4 mr-2 inline-block"></i> ออกจากระบบ
+                </button>
+            </div>
+        </div>
+    </nav>
+
+    <main class="max-w-7xl mx-auto py-8 sm:px-6 lg:px-8">
+        <!-- Auth View -->
+        <div id="auth-view" class="flex items-center justify-center min-h-[calc(100vh-8rem)]">
+            <div class="w-full max-w-md card bg-white p-8">
+                <h2 id="auth-title" class="text-3xl font-bold text-center mb-6 text-green-600">เข้าสู่ระบบ</h2>
+                <form id="auth-form" onsubmit="handleAuth(event)">
+                    <input type="hidden" id="auth-mode" value="login">
+                    <div class="mb-4">
+                        <label for="username" class="block text-sm font-medium text-gray-700 mb-1">ชื่อผู้ใช้</label>
+                        <input type="text" id="username" required class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-green-500 focus:border-green-500 transition">
+                    </div>
+                    <div id="tel-group" class="mb-4 hidden">
+                        <label for="tel" class="block text-sm font-medium text-gray-700 mb-1">เบอร์โทรศัพท์ (กรอกเฉพาะเลข 10 หบักเท่านั้น): ตัวอย่าง 0123456789</label>
+                        <input type="tel" pattern="[0-9]{10}" id="tel" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-green-500 focus:border-green-500 transition">
+                    </div>
+                    <div class="mb-6">
+                        <label for="password" class="block text-sm font-medium text-gray-700 mb-1">รหัสผ่าน</label>
+                        <input type="password" id="password" required class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-green-500 focus:border-green-500 transition">
+                    </div>
+                    <div id="password-confirm-tab" class="mb-6 hidden">
+                        <label for="password-confirm" class="block text-sm font-medium text-gray-700 mb-1">ยืนยันรหัสผ่านอีกครั้ง</label>
+                        <input type="password" id="password-confirm" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-green-500 focus:border-green-500 transition">
+                    </div>
+                    <button id="auth-submit-btn" type="submit" class="w-full bg-green-600 text-white py-2 rounded-lg font-semibold hover:bg-green-700 transition duration-300">เข้าสู่ระบบ</button>
+                </form>
+                <div class="mt-6 text-center">
+                    <button id="toggle-auth-btn" onclick="toggleAuthMode()" class="text-sm text-green-600 hover:text-green-700 font-medium">ลงทะเบียนเพื่อสร้างบัญชี</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- User Preference View -->
+        <div id="profile-view" class="hidden">
+            <h1 class="text-3xl font-bold text-gray-800 mb-6 flex items-center">
+                <i data-lucide="user" class="w-7 h-7 mr-2 text-primary"></i> ข้อมูลผู้ใช้
+            </h1>
+            <div class="card bg-white p-6">
+                <h2 class="text-xl font-semibold text-gray-700 mb-4">ข้อมูลบัญชีผู้ใช้</h2>
+                <p><strong>บัญชีผู้ใช้:</strong> <span class="font-mono text-gray-700" id="profile-user-id">Loading...</span></p>
+                <form id="change-password-form" onsubmit="changePassword(event)">
+                    <div class="mb-6">
+                        <label for="change-password" class="block text-sm font-medium text-gray-700 mb-1">รหัสผ่านใหม่</label>
+                        <input type="password" id="change-password" required class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-green-500 focus:border-green-500 transition">
+                    </div>
+                    <div id="password-confirm-tab" class="mb-6">
+                        <label for="change-password-confirm" class="block text-sm font-medium text-gray-700 mb-1">ยืนยัน</label>
+                        <input type="password" id="change-password-confirm" required class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-green-500 focus:border-green-500 transition">
+                    </div>
+                    <button id="password-submit-btn" type="submit" class="w-full bg-green-600 text-white py-2 rounded-lg font-semibold hover:bg-green-700 transition duration-300">เปลี่ยนรหัสผ่าน</button>
+                </form>
+            </div>
+
+            
+
+        </div>
+
+        <!-- Farm Management View -->
+        <div id="farm-management-view" class="hidden">
+            <div class="flex justify-between items-center mb-6">
+                <h1 class="text-3xl font-bold text-gray-800">การจัดการไร่สวน</h1>
+                <button onclick="showFarmForm('create')" class="bg-blue-600 text-white px-4 py-2 rounded-lg font-medium hover:bg-blue-700 transition flex items-center">
+                    <i data-lucide="plus-circle" class="w-5 h-5 mr-2"></i> สร้างไร่/สวนใหม่
+                </button>
+            </div>
+
+            <div id="farm-dashboard-stats" class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+                <!-- Farm Count Card -->
+                <div class="card bg-white p-6">
+                    <div class="flex items-center">
+                        <div class="p-3 rounded-full bg-primary/10 text-primary mr-4"><i data-lucide="sprout" class="w-6 h-6"></i></div>
+                        <div>
+                            <p class="text-sm font-medium text-gray-500">จำนวนไร่สวนทั้งหมด</p>
+                            <p id="farm-total-farms-stat" class="text-2xl font-bold text-gray-900">0</p>
+                        </div>
+                    </div>
+                </div>
+                <!-- Device Count Card -->
+                <div class="card bg-white p-6">
+                    <div class="flex items-center">
+                        <div class="p-3 rounded-full bg-secondary/10 text-secondary mr-4"><i data-lucide="cpu" class="w-6 h-6"></i></div>
+                        <div>
+                            <p class="text-sm font-medium text-gray-500">จำนวนอุปกรณ์ทั้งหมด</p>
+                            <p id="farm-total-devices-stat" class="text-2xl font-bold text-gray-900">0</p>
+                        </div>
+                    </div>
+                </div>
+                <!-- Active Devices Card -->
+                <div class="card bg-white p-6">
+                    <div class="flex items-center">
+                        <div class="p-3 rounded-full bg-accent/10 text-accent mr-4"><i data-lucide="activity" class="w-6 h-6"></i></div>
+                        <div>
+                            <p class="text-sm font-medium text-gray-500">อุปกรณ์ที่พร้อมใช้งาน</p>
+                            <p id="farm-active-devices-stat" class="text-2xl font-bold text-gray-900">0</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <h2 class="text-2xl font-bold text-gray-800">รายการไร่สวน</h2>
+
+            <!-- Farm Form Modal -->
+            <div id="farm-form-container" class="hidden card bg-white p-6 mb-6">
+                <h2 id="farm-form-title" class="text-2xl font-semibold text-gray-800 mb-4">เพิ่มไร่/สวนใหม่</h2>
+                <form id="farm-form" onsubmit="handleFarmFormSubmit(event)" data-mode="create" data-farm-id="">
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+                        <div>
+                            <label for="farm-id-code" class="block text-sm font-medium text-gray-700 mb-1">รหัสไร่สวน (ห้ามซ้ำ)</label>
+                            <input type="text" id="farm-id-code" required class="w-full px-3 py-2 border rounded-lg">
+                        </div>
+                        <div>
+                            <label for="farm-name" class="block text-sm font-medium text-gray-700 mb-1">ชื่อไร่/สวน</label>
+                            <input type="text" id="farm-name" required class="w-full px-3 py-2 border rounded-lg">
+                        </div>
+                        <div>
+                            <label for="farm-location" class="block text-sm font-medium text-gray-700 mb-1">สถานที่ (ตัวอย่าง: หนองจอก, กรุงเทพ; ปาย, แม่ฮ่องสอน)</label>
+                            <input type="text" id="farm-location" class="w-full px-3 py-2 border rounded-lg">
+                        </div>
+                    </div>
+                    <div>
+                        <label for="farm-viewer" class="block text-sm font-medium text-gray-700 mb-1">เบอร์โทรศัพท์สำหรับผู้ดูข้อมูล (ตัวอย่าง: 0812345678 0987654321) กรอก 10 หลักแล้วเว้นวรรคก่อนกรอกเบอร์ถัดไป</label>
+                        <input type="text" id="farm-viewer" class="w-full px-3 py-2 border rounded-lg">
+                    </div>
+                    <div class="flex justify-end space-x-3">
+                        <button type="button" onclick="document.getElementById('farm-form-container').classList.add('hidden')" class="px-4 py-2 bg-gray-200 text-gray-700 font-medium rounded-lg hover:bg-gray-300 transition">ยกเลิก</button>
+                        <button id="farm-submit-btn" type="submit" class="px-4 py-2 bg-green-600 text-white font-medium rounded-lg hover:bg-green-700 transition">บันทึกไร่สวน</button>
+                    </div>
+                </form>
+            </div>
+
+            <!-- Farms List -->
+            <div id="farms-list" class="space-y-4 mb-6">
+                <!-- Farm cards will be rendered here -->
+            </div>
+
+            <h2 class="text-2xl font-bold text-gray-800">รายการไร่สวนที่ได้รับการแชร์</h2>
+            <div id="farms-shared-list" class="space-y-4">
+
+            </div>
+        </div>
+
+        <!-- Device Management View -->
+        <div id="device-management-view" class="hidden">
+            <div class="flex justify-between items-center mb-6">
+                <h1 class="text-3xl font-bold text-gray-800">การจัดการอุปกรณ์</h1>
+                <div class="flex space-x-3">
+                    <select id="device-farm-selector" onchange="fetchDevices(this.id)" class="px-4 py-2 border rounded-lg shadow-sm focus:ring-green-500 focus:border-green-500 transition">
+                        <option value="">-- เลือกไร่/สวน --</option>
+                        <!-- Options populated by JS -->
+                    </select>
+                    <button id="add-device-btn" disabled class="bg-blue-600 text-white px-4 py-2 rounded-lg font-medium hover:bg-blue-700 transition disabled:bg-gray-400 flex items-center">
+                        <i data-lucide="cpu" class="w-5 h-5 mr-2"></i> เพิ่มอุปกรณ์
+                    </button>
+                </div>                
+            </div>
+
+            <div id="device-dashboard-stats" class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+                <!-- Farm Count Card -->
+                <div class="card bg-white p-6">
+                    <div class="flex items-center">
+                        <div class="p-3 rounded-full bg-primary/10 text-primary mr-4"><i data-lucide="sprout" class="w-6 h-6"></i></div>
+                        <div>
+                            <p class="text-sm font-medium text-gray-500">จำนวนไร่สวนทั้งหมด</p>
+                            <p id="device-total-farms-stat" class="text-2xl font-bold text-gray-900">0</p>
+                        </div>
+                    </div>
+                </div>
+                <!-- Device Count Card -->
+                <div class="card bg-white p-6">
+                    <div class="flex items-center">
+                        <div class="p-3 rounded-full bg-secondary/10 text-secondary mr-4"><i data-lucide="cpu" class="w-6 h-6"></i></div>
+                        <div>
+                            <p class="text-sm font-medium text-gray-500">จำนวนอุปกรณ์ทั้งหมด</p>
+                            <p id="device-total-devices-stat" class="text-2xl font-bold text-gray-900">0</p>
+                        </div>
+                    </div>
+                </div>
+                <!-- Active Devices Card -->
+                <div class="card bg-white p-6">
+                    <div class="flex items-center">
+                        <div class="p-3 rounded-full bg-accent/10 text-accent mr-4"><i data-lucide="activity" class="w-6 h-6"></i></div>
+                        <div>
+                            <p class="text-sm font-medium text-gray-500">อุปกรณ์ที่พร้อมใช้งาน</p>
+                            <p id="device-active-devices-stat" class="text-2xl font-bold text-gray-900">กำลังพัฒนา</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <h2 class="text-2xl font-bold text-gray-800">รายการอุปกรณ์</h2>
+
+            <!-- Device Form Modal -->
+            <div id="device-form-container" class="hidden card bg-white p-6 mb-6">
+                <h2 id="device-form-title" class="text-2xl font-semibold text-gray-800 mb-4">เพิ่มอุปกรณ์ใหม่</h2>
+                <form id="device-form" onsubmit="handleDeviceFormSubmit(event)" data-mode="create" data-device-id="" data-farm-id-code="">
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
+                        <div>
+                            <label for="device-farm-code-display" class="block text-sm font-medium text-gray-700 mb-1">รหัสไร่สวนที่เลือก</label>
+                            <p id="device-farm-code-display" class="w-full px-3 py-2 bg-gray-100 border rounded-lg"></p>
+                        </div>
+                        <div>
+                            <label for="device-id-code" class="block text-sm font-medium text-gray-700 mb-1">รหัสอุปกรณ์ (กรอก)</label>
+                            <input type="text" id="device-id-code" required class="w-full px-3 py-2 border rounded-lg">
+                        </div>
+                        <div>
+                            <label for="device-name" class="block text-sm font-medium text-gray-700 mb-1">ชื่ออุปกรณ์</label>
+                            <input type="text" id="device-name" required class="w-full px-3 py-2 border rounded-lg">
+                        </div>
+                        <div>
+                            <label for="device-type" class="block text-sm font-medium text-gray-700 mb-1">ชนิดอุปกรณ์</label>
+                            <select id="device-type" required class="w-full px-3 py-2 border rounded-lg">
+                                <!-- Options populated by JS -->
+                            </select>
+                        </div>
+                        <div>
+                            <label for="device-unit" class="block text-sm font-medium text-gray-700 mb-1">หน่วย (เช่น องศาเซลเซียส, %)</label>
+                            <input type="text" id="device-unit" class="w-full px-3 py-2 border rounded-lg">
+                        </div>
+                        <div>
+                            <label for="panel-color" class="block text-sm font-medium text-gray-700 mb-1">สี</label>
+                            <input type="color" id="panel-color" name="panel-color" value="#00ff00" class="w-full px-3 py-2 border rounded-lg">
+                        </div>
+                    </div>
+                    <div class="flex justify-end space-x-3">
+                        <button type="button" onclick="document.getElementById('device-form-container').classList.add('hidden')" class="px-4 py-2 bg-gray-200 text-gray-700 font-medium rounded-lg hover:bg-gray-300 transition">ยกเลิก</button>
+                        <button id="device-submit-btn" type="submit" class="px-4 py-2 bg-green-600 text-white font-medium rounded-lg hover:bg-green-700 transition">บันทึกอุปกรณ์</button>
+                    </div>
+                </form>
+            </div>
+
+            <!-- Devices List -->
+            <div id="devices-list" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                <p class="text-gray-500 col-span-full">เลือกไร่/สวน เพื่อดูหรือเพิ่มอุปกรณ์</p>
+            </div>
+        </div>
+
+        <!-- Dashboard View (Placeholder for future) -->
+        <div id="dashboard-view" class="hidden">
+            <div class="flex justify-between items-center mb-6">
+                <h1 class="text-3xl font-bold text-gray-800">หน้าสรุปข้อมูลของไร่/สวน</h1>
+                    <div class="flex space-x-3">
+                    <select id="dashboard-farm-selector" onchange="fetchDevices(this.id, null, true)" class="px-4 py-2 border rounded-lg shadow-sm focus:ring-green-500 focus:border-green-500 transition">
+                        <option id = "dashboard-farm-option" value="">-- เลือกไร่/สวน --</option>
+                        <!-- Options populated by JS -->
+                    </select>
+                </div>
+            </div>
+
+            <!-- Panel Timer Modal -->
+            <div id="panel-form-timer-container" class="hidden card bg-white p-6 mb-6">
+                <h2 id="panel-form-timer-title" class="text-2xl font-semibold text-gray-800 mb-4">เพิ่มหน้าข้อมูลใหม่</h2>
+                <form id="panel-form-timer" onsubmit="handlePanelSetting('timer', event)" data-mode="setting" data-device-id="" data-farm-id-code="">
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+                        <div class="mb-4">
+                            <label for="setting-value-1" class="block text-sm font-medium text-gray-700 mb-1">เวลาเริ่มต้น: รูปแบบ [00.00]</label>
+                            <input type="text" pattern="[0-9]{2}.[0-9]{2}" id="setting-value-1" class="w-full px-3 py-2 border rounded-lg">
+                        </div>
+                        <div>
+                            <label for="setting-value-2" class="block text-sm font-medium text-gray-700 mb-1">ระยะเวลา</label>
+                            <input type="text" id="setting-value-2" class="w-full px-3 py-2 border rounded-lg">
+                        </div>
+                        <div>
+                            <label for="panel-setting-unit" class="block text-sm font-medium text-gray-700 mb-1">หน่วย</label>
+                            <select id="panel-setting-unit" required class="w-full px-3 py-2 border rounded-lg">
+                                <option value="วินาที"> วินาที </option>
+                                <option value="นาที"> นาที </option> 
+                                <option value="ชั่วโมง"> ชั่วโมง </option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="flex justify-between">    
+                        <p for="panel-day" class="block text-sm font-medium text-gray-700 mb-1">วันที่ทำงาน</p>
+                        <div>
+                            <input 
+                                type="checkbox" 
+                                id="everyday" 
+                                onchange="toggleAll(this)" 
+                                class="h-6 w-6 text-green-600 border-gray-300 rounded custom-checkbox focus:ring-green-500"
+                            >
+                            <label for="checkAll" class="text-lg font-semibold text-black select-none cursor-pointer">
+                                ทุกวัน
+                            </label>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-1 md:grid-cols-7 gap-2 mb-2">
+                        <div id = "sun" class="flex items-center space-x-3">
+                            <input 
+                                type="checkbox" 
+                                id="sun" 
+                                name="sun" 
+                                value="sun"
+                                class="day h-5 w-5 text-gray-600 border-gray-300 rounded custom-checkbox focus:ring-gray-500"
+                            >
+                            <label for="sun" class="text-gray-700 select-none cursor-pointer">
+                                อาทิตย์
+                            </label>
+                        </div>
+                        <div id = "mon" class="flex items-center space-x-3">
+                            <input 
+                                type="checkbox" 
+                                id="mon" 
+                                name="mon" 
+                                value="mon"
+                                class="day h-5 w-5 text-gray-600 border-gray-300 rounded custom-checkbox focus:ring-gray-500"
+                            >
+                            <label for="mon" class="text-gray-700 select-none cursor-pointer">
+                                จันทร์
+                            </label>
+                        </div>
+                        <div id = "tue" class="flex items-center space-x-3">
+                            <input 
+                                type="checkbox" 
+                                id="tue" 
+                                name="tue" 
+                                value="tue"
+                                class="day h-5 w-5 text-gray-600 border-gray-300 rounded custom-checkbox focus:ring-gray-500"
+                            >
+                            <label for="tue" class="text-gray-700 select-none cursor-pointer">
+                                อังคาร
+                            </label>
+                        </div>
+                        <div id = "wed" class="flex items-center space-x-3">
+                            <input 
+                                type="checkbox" 
+                                id="wed" 
+                                name="wed" 
+                                value="wed"
+                                class="day h-5 w-5 text-gray-600 border-gray-300 rounded custom-checkbox focus:ring-gray-500"
+                            >
+                            <label for="wed" class="text-gray-700 select-none cursor-pointer">
+                                พุธ
+                            </label>
+                        </div>
+                        <div id = "thu" class="flex items-center space-x-3">
+                            <input 
+                                type="checkbox" 
+                                id="thu" 
+                                name="thu" 
+                                value="thu"
+                                class="day h-5 w-5 text-gray-600 border-gray-300 rounded custom-checkbox focus:ring-gray-500"
+                            >
+                            <label for="thu" class="text-gray-700 select-none cursor-pointer">
+                                พฤหัสบดี
+                            </label>
+                        </div>
+                        <div id = "fri" class="flex items-center space-x-3">
+                            <input 
+                                type="checkbox" 
+                                id="fri" 
+                                name="fri" 
+                                value="fri"
+                                class="day h-5 w-5 text-gray-600 border-gray-300 rounded custom-checkbox focus:ring-gray-500"
+                            >
+                            <label for="fri" class="text-gray-700 select-none cursor-pointer">
+                                ศุกร์
+                            </label>
+                        </div>
+                        <div id = "sat" class="flex items-center space-x-3">
+                            <input 
+                                type="checkbox" 
+                                id="sat" 
+                                name="sat" 
+                                value="sat"
+                                class="day h-5 w-5 text-gray-600 border-gray-300 rounded custom-checkbox focus:ring-gray-500"
+                            >
+                            <label for="sat" class="text-gray-700 select-none cursor-pointer">
+                                เสาร์
+                            </label>
+                        </div>
+                    </div>
+                    <div class="flex justify-end space-x-3">
+                        <button type="button" onclick="document.getElementById('panel-form-timer-container').classList.add('hidden'); document.getElementById('panels-list').classList.remove('hidden');" class="px-4 py-2 bg-gray-200 text-gray-700 font-medium rounded-lg hover:bg-gray-300 transition">ยกเลิก</button>
+                        <button id="timer-submit-btn" type="submit" class="px-4 py-2 bg-green-600 text-white font-medium rounded-lg hover:bg-green-700 transition">เปิดโหมดตั้งเวลา</button>
+                    </div>
+                </form>
+            </div>
+
+            <!-- Panel Auto Modal -->
+            <div id="panel-form-auto-container" class="hidden card bg-white p-6 mb-6">
+                <h2 id="panel-form-auto-title" class="text-2xl font-semibold text-gray-800 mb-4">เพิ่มหน้าข้อมูลใหม่</h2>
+                <form id="panel-form-auto" onsubmit="handlePanelSetting('auto', event)" data-mode="setting" data-panel-id="" data-device-id="" data-farm-id-code="">
+                    <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
+                        <div>
+                            <label for="panel-setting-sensor" class="block text-sm font-medium text-gray-700 mb-1">เซ็นเซอร์</label>
+                            <select id="panel-setting-sensor" onchange="callDeviceDetail(this.value.trim());" required class="w-full px-3 py-2 border rounded-lg">
+                                
+                            </select>
+                        </div>
+                        <div>
+                            <label for="auto-device-code-display" class="block text-sm font-medium text-gray-700 mb-1">รหัสเซ็นเซอร์</label>
+                            <p id="auto-device-code-display" disabled class="w-full px-3 py-2 border rounded-lg"></p>
+                        </div>
+                        <div class="mb-4">
+                            <label for="setting-value" class="block text-sm font-medium text-gray-700 mb-1">ค่า (ระบุตัวเลข) </label>
+                            <input type="number" id="setting-value" class="w-full px-3 py-2 border rounded-lg">
+                        </div>
+                        <div>
+                            <label for="panel-setting-criteria" class="block text-sm font-medium text-gray-700 mb-1">เกณฑ์</label>
+                            <select id="panel-setting-criteria" required class="w-full px-3 py-2 border rounded-lg">
+                                <option value="น้อยกว่า"> น้อยกว่า </option>
+                                <option value="เท่ากับ"> เท่ากับ </option> 
+                                <option value="มากกว่า"> มากกว่า </option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="flex justify-end space-x-3">
+                        <button type="button" onclick="document.getElementById('panel-form-auto-container').classList.add('hidden'); document.getElementById('panels-list').classList.remove('hidden');" class="px-4 py-2 bg-gray-200 text-gray-700 font-medium rounded-lg hover:bg-gray-300 transition">ยกเลิก</button>
+                        <button id="auto-submit-btn" type="submit" class="px-4 py-2 bg-green-600 text-white font-medium rounded-lg hover:bg-green-700 transition">เปิดโหมดอัตโนมัติ</button>
+                    </div>
+                </form>
+            </div>
+
+            <div id="panels-list" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-[40%_60%] gap-6">
+                <p class="text-gray-500 col-span-full">เลือกไร่/สวน เพื่อดูหน้าข้อมูล</p>
+            </div>
+
+        </div>
+    </main>
+
+    <script type="module">
+        // --- CONFIGURATION ---
+        const API_BASE_URL = 'http://209.97.164.156:5000/api/v1';
+        const DEVICE_TYPES = ['เซ็นเซอร์', 'อุปกรณ์ขับ'];
+
+        const INFLUX_URL = "http://209.97.164.156:8086"; // Internal Docker network name
+        // Use your initial token from docker-compose.yml
+        const INFLUX_TOKEN = "my-secret-token"; 
+        const INFLUX_ORG = "smartfarm_org"; 
+        const INFLUX_BUCKET = "sensor_data";
+
+        const mobileMenu = document.getElementById('mobile-menu');
+        const menuToggle = document.getElementById('mobile-menu-toggle');
+        const menuIcon = document.getElementById('menu-icon');
+        
+        let auth; 
+        let currentUserId = localStorage.getItem('userId') || null;
+        let currentUsername = localStorage.getItem('username') || null;
+        let authToken = null; // Standardized auth token variable
+        
+        let allFarms = [];
+        let sharedFarms = [];
+        let allDevices = [];
+        let chartInstance = {};
+        let now = '';
+        let globalData = []; 
+        let isCustom = false;
+
+        // --- UI Elements ---
+        const panelsList = document.getElementById('panels-list');
+
+        const socket = io('http://209.97.164.156:5000');
+
+        // --- END GLOBAL STATE INITIALIZATION ---
+
+        // Utility function to introduce a delay
+        function sleep(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+
+        // Custom Confirmation Modal Implementation (Replaces window.confirm)
+        let confirmActionCallback = () => {};
+
+        function showConfirmModal(title, message, callback) {
+            document.getElementById('confirm-title').textContent = title;
+            document.getElementById('confirm-message').textContent = message;
+            document.getElementById('confirmation-modal').classList.remove('hidden');
+            confirmActionCallback = callback;
+        }
+
+        function hideConfirmModal() {
+            document.getElementById('confirmation-modal').classList.add('hidden');
+            confirmActionCallback = () => {};
+        }
+
+        document.getElementById('confirm-cancel-btn').onclick = hideConfirmModal;
+        document.getElementById('confirm-action-btn').onclick = () => {
+            confirmActionCallback();
+            hideConfirmModal();
+        };
+        // End Custom Confirmation Modal
+
+        // Function to display status messages
+        function showStatus(message, type = 'info') {
+            const bar = document.getElementById('status-bar');
+            bar.textContent = message;
+            // Ensure no existing status-bar- classes interfere
+            bar.className = 'fixed top-4 right-4 m-4 p-3 rounded-lg shadow-xl z-50 text-sm transition-all duration-300';
+            bar.classList.add(`status-bar-${type}`);
+            bar.classList.remove('hidden');
+
+            setTimeout(() => {
+                bar.classList.add('hidden');
+            }, 6000);
+        }
+
+        // Toggles between login and register modes
+        function toggleAuthMode() {
+            const modeInput = document.getElementById('auth-mode');
+            const title = document.getElementById('auth-title');
+            const submitBtn = document.getElementById('auth-submit-btn');
+            const toggleBtn = document.getElementById('toggle-auth-btn');
+            const telGroup = document.getElementById('tel-group');
+            const passwordConfirm = document.getElementById('password-confirm-tab');
+
+            if (modeInput.value === 'login') {
+                modeInput.value = 'register';
+                title.textContent = 'Register';
+                submitBtn.textContent = 'Register';
+                toggleBtn.textContent = 'Already have an account? Log In';
+                telGroup.classList.remove('hidden');
+                passwordConfirm.classList.remove('hidden');
+                document.getElementById('tel').required = true;
+            } else {
+                modeInput.value = 'login';
+                title.textContent = 'Log In';
+                submitBtn.textContent = 'Log In';
+                toggleBtn.textContent = 'Need an account? Register';
+                telGroup.classList.add('hidden');
+                passwordConfirm.classList.add('hidden');
+                document.getElementById('tel').required = false;
+            }
+        }
+        
+        // API CALL HANDLER
+        async function makeApiCall(url, method, payload, explicitUserId = null, explicitAuthToken = null) {
+                const upperMethod = method.toUpperCase();
+                // Check if this is an authentication endpoint (e.g., /users/login)
+                const isAuthEndpoint = !url.includes('/users/') || url.includes('/change'); 
+                
+                // Determine the effective user ID and auth token to use
+                const effectiveUserId = explicitUserId || currentUserId;
+                const effectiveAuthToken = explicitAuthToken || authToken; 
+
+                // Guardrail: Prevent API calls to authenticated endpoints if the user ID is missing
+                if (isAuthEndpoint && !effectiveUserId) {
+                    const errorMsg = "Authentication required for this action. User ID is missing.";
+                    console.error(errorMsg);
+                    showStatus("Please log in to perform this action.", "warning");
+                    switchView('auth-view', false);
+                    throw new Error(errorMsg); 
+                }
+                
+                let requestData = payload || {};
+                
+                const options = {
+                    method: upperMethod,
+                    headers: {}, 
+                };
+
+                // Inject Authorization header if a token is present
+                if (effectiveAuthToken) {
+                     options.headers['Authorization'] = `Bearer ${effectiveAuthToken}`;
+                }
+
+                // FIX FOR 401: Inject X-User-ID header for server-side authentication check
+                if (isAuthEndpoint && effectiveUserId) {
+                    options.headers['X-User-ID'] = effectiveUserId.toString();
+                }
+                
+                let finalUrl = url;
+                
+                // --- UPDATED LOGIC FOR GET, HEAD, AND DELETE ---
+                // These methods typically do not send a body, but can use query parameters.
+                if (upperMethod === 'GET' || upperMethod === 'HEAD' || upperMethod === 'DELETE') {
+                    const params = new URLSearchParams();
+                    
+                    // Add data (e.g., filters) to params for GET/HEAD/DELETE
+                    for (const key in requestData) {
+                        const value = requestData[key];
+                        if (value !== null && value !== undefined) {
+                             params.append(key, value);
+                        }
+                    }
+                    
+                    const queryString = params.toString();
+                    if (queryString) {
+                        finalUrl = `${url}?${queryString}`;
+                    }
+                    
+                    // IMPORTANT: Ensure Content-Type is NEVER sent for GET/HEAD/DELETE
+                    if (options.headers['Content-Type']) {
+                        delete options.headers['Content-Type'];
+                    }
+
+                } else {
+                    // POST/PUT/PATCH Logic
+                    // For non-GET methods on authenticated endpoints, the server's @require_auth decorator 
+                    // handles getting the user, but we still include user_id in the body for debugging/legacy if needed.
+                    if (isAuthEndpoint && effectiveUserId) {
+                        requestData = { ...requestData, user_id: effectiveUserId };
+                    }
+
+                    options.headers['Content-Type'] = 'application/json';
+                    options.body = JSON.stringify(requestData);
+                }
+
+                try {
+                    // For DEBUG only
+                    // console.log(`API Call: ${upperMethod} ${finalUrl}`);
+                    // console.log('Request Headers:', options.headers);
+                    // console.log('Body: ', options.body);
+                    const response = await fetch(finalUrl, options);
+                    const contentType = response.headers.get("content-type");
+                    let data = {};
+                    let rawResponseText = null;
+
+                    if (response.ok) {
+                        if (contentType && contentType.includes("application/json")) {
+                            try {
+                               data = await response.json();
+                            } catch (e) {
+                               console.warn("Successful response, but failed to parse JSON:", e);
+                            }
+                        }
+                        return data;
+                    } else {
+                        rawResponseText = await response.text();
+                        
+                        try {
+                            data = JSON.parse(rawResponseText);
+                        } catch (e) {
+                            // Fallback to raw text
+                        }
+
+                        const errorDetails = data.error || data.message || rawResponseText.substring(0, 100);
+                        const errorMessage = `API call failed with status ${response.status}: ${errorDetails}`;
+                        
+                        showStatus(errorMessage, "error");
+                        console.error('Full Error Response Body:', rawResponseText);
+                        throw new Error(errorMessage);
+                    }
+
+                } catch (error) {
+                    console.error('Network or API Error:', error);
+                    if (error.message.includes('User ID is missing')) return null;
+                    showStatus("An unexpected network error occurred or server rejected request. Check console.", "error");
+                    return null;
+                }
+            }
+
+        // FARM DATA FETCHING 
+        async function fetchFarms(renderList = true, userId = null, explicitAuthToken = null) {
+            const data = await makeApiCall(`${API_BASE_URL}/farms`, 'POST', null, userId, explicitAuthToken); 
+            if (data && data.farms) {
+                allFarms = data.farms;
+                sharedFarms = data.sharedFarms;
+                document.getElementById('farm-total-farms-stat').textContent = allFarms.length;
+                document.getElementById('device-total-farms-stat').textContent = allFarms.length;
+                PopulateFarmSelectors();
+                if (renderList) {
+                    renderFarms();
+                }
+                return data.farms;
+            } else {
+                allFarms = [];
+                if (renderList) {
+                    renderFarms();
+                }
+                return [];
+            }
+        }
+
+        // AUTHENTICATION HANDLER (Includes robust view switching)
+        async function handleAuth(event) {
+            event.preventDefault();
+            const mode = document.getElementById('auth-mode').value;
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+            const tel = document.getElementById('tel').value;
+            
+            const url = mode === 'login' ? `${API_BASE_URL}/users/login` : `${API_BASE_URL}/users/register`;
+            const payload = mode === 'login' ? { username, password } : { username, tel, password};
+
+            if (mode === 'register'){
+                if(username.includes(' ')){
+                    showStatus("Username must not includes space");
+                    return;
+                }
+                if(!(password===document.getElementById('password-confirm').value)){
+                    showStatus("Confirm Password Mismatch", "warning");
+                    return;
+                }
+            }
+            
+            const data = await makeApiCall(url, 'POST', payload);
+
+            if (data) {
+                if (mode === 'register') {
+                    showStatus("Registration successful! Please log in.", "success");
+                    document.getElementById('username').value = username;
+                    toggleAuthMode();
+                } else {
+                    const foundId = data.userId || data.id || data.user_id;
+                    const newUserId = foundId ? String(foundId) : null;
+                    const token = data.token;
+
+                    if (!newUserId) {
+                        console.error('Login Response Missing User ID:', data);
+                        showStatus("Login failed: User ID not found in response.", "error");
+                        return;
+                    }
+
+                    currentUserId = newUserId;
+                    currentUsername = data.username || username;
+                    authToken = token;
+                    
+                    localStorage.setItem('userId', currentUserId);
+                    localStorage.setItem('username', currentUsername);
+                    
+                    await fetchFarms(true, currentUserId, authToken);
+
+                    switchView('farm-management-view', false); 
+                    showStatus(`Welcome back, ${currentUsername}!`, "success");
+                }
+            }
+        }
+        
+        // VIEW SWITCHER
+        function switchView(newViewName, doFetch = true, farmIdCode = null) {
+            const views = ['auth-view', 'profile-view', 'dashboard-view', 'farm-management-view', 'device-management-view'];
+            views.forEach(viewId => {
+                const view = document.getElementById(viewId);
+                if (viewId === newViewName) {
+                    view.classList.remove('hidden');
+                } else {
+                    view.classList.add('hidden');
+                }
+            });
+            
+            const navBar = document.getElementById('nav-bar');
+            
+            if (newViewName === 'auth-view') {
+                 navBar.classList.add('hidden');
+            } else {
+                 navBar.classList.remove('hidden');
+            }
+
+            // Update active navigation link styling
+            document.querySelectorAll('.nav-link').forEach(link => {
+                link.classList.toggle('text-primary', link.dataset.view === newViewName);
+                link.classList.toggle('font-bold', link.dataset.view === newViewName);
+                link.classList.toggle('text-gray-600', link.dataset.view !== newViewName);
+                link.classList.toggle('font-medium', link.dataset.view !== newViewName);
+            });
+
+            if (newViewName === 'farm-management-view' && doFetch) {
+                fetchFarms(true);
+            } else if (newViewName === 'device-management-view') {
+                // Ensure farms are loaded before viewing device page
+                fetchFarms(false).then(() => {
+                    const farmSelector = document.getElementById('device-farm-selector');
+                    if (farmSelector.value) {
+                        fetchDevices('device-farm-selector');
+                    } else {
+                        document.getElementById('add-device-btn').disabled = true;
+                        document.getElementById('devices-list').innerHTML = '<p class="text-gray-500 col-span-full">Select a farm to view or add devices.</p>';
+                    }
+                });
+            } else if (newViewName === 'dashboard-view' && doFetch) {
+                // Fetch data for dashboard (optional, can be linked to farm fetch if desired)
+                fetchFarms(false).then(() => {
+                    const farmSelector = document.getElementById('dashboard-farm-selector');
+                    if(farmIdCode){
+                        farmSelector.value = farmIdCode;
+                    }
+                    if (farmSelector.value) {
+                        fetchDevices('dashboard-farm-selector');
+                    } else {
+                        document.getElementById('panels-list').innerHTML = '<p class="text-gray-500 col-span-full">Select a farm to view panels.</p>';
+                    }
+                });
+            } else if (newViewName === 'profile-view') {
+                document.getElementById('profile-user-id').innerHTML = `${currentUsername}`;
+            }
+        }
+
+        // AUTHENTICATION HANDLER (Includes robust view switching)
+        async function changePassword(event) {
+            event.preventDefault();
+            const newPassword = document.getElementById('change-password').value;
+            const newPasswordConfirm = document.getElementById('change-password-confirm').value;
+            
+            const url = `${API_BASE_URL}/users/change`;
+            const payload = { username: currentUsername, new_password: newPassword};
+
+            if(!(newPassword===newPasswordConfirm)){
+                console.error("Confirm Password Mismatch");
+                showStatus("Confirm Password Mismatch", "warning");
+                return;
+            }
+            
+            const data = await makeApiCall(url, 'PUT', payload);
+
+            if (data) {
+                showStatus("Change Password successful!", "success");
+                document.getElementById('username').value = currentUsername;
+                switchView('farm-management-view');
+                document.getElementById('change-password').value = "";
+                document.getElementById('change-password-confirm').value = "";
+            }
+        }
+
+        // FARM MANAGEMENT FUNCTIONS
+        function renderFarms() {
+            const listElem = document.getElementById('farms-list');
+            listElem.innerHTML = '';
+            
+            if (allFarms.length === 0) {
+                listElem.innerHTML = '<p class="text-gray-500">ยังไม่มีรายการไร่/สวน สามารถเพิ่มได้จากด้านบน</p>';
+            } else {
+                allFarms.forEach(farm => {
+                    const card = document.createElement('div');
+                    card.className = 'flex justify-between items-center p-4 bg-white rounded-xl shadow-lg border border-gray-100';
+                    card.innerHTML = `
+                        <div>
+                            <button onclick="switchView('dashboard-view', true, '${farm.farm_id_code}');" class="text-lg font-bold text-green-700">${farm.name}</button> <span class="text-sm font-normal text-gray-500">(${farm.farm_id_code})</span>
+                            <p class="text-sm text-gray-600">${farm.location || 'ไม่ได้ระบุสถานที่'}</p>
+                        </div>
+                        <div class="space-x-2">
+                            <button class="text-blue-500 hover:text-blue-700 text-sm font-medium farm-edit-btn" data-action="edit-farm" data-id="${farm.id}" data-farm-id-code="${farm.farm_id_code}">
+                                <i data-lucide="pencil" class="w-4 h-4 inline"></i> แก้ไข
+                            </button>
+                            <button class="text-red-500 hover:text-red-700 text-sm font-medium farm-delete-btn" data-action="delete-farm" data-id="${farm.id}" data-name="${farm.name}">
+                                <i data-lucide="trash-2" class="w-4 h-4 inline"></i> ลบ
+                            </button>
+                        </div>
+                    `
+                    listElem.appendChild(card);
+                });
+            }
+
+            const listElemShare = document.getElementById('farms-shared-list');
+            listElemShare.innerHTML = '';
+
+            if (sharedFarms.length === 0) {
+                listElemShare.innerHTML = '<p class="text-gray-500">ไม่ไร่/สวนที่ได้รับการแชร์.</p>';
+            } else {
+                sharedFarms.forEach(farm => {
+                    const card = document.createElement('div');
+                    card.className = 'flex justify-between items-center p-4 bg-white rounded-xl shadow-lg border border-gray-100';
+                    card.innerHTML = `
+                        <div>
+                            <button onclick="switchView('dashboard-view'); "switchView('dashboard-view', true, '${farm.farm_id_code}');" class="text-lg font-bold text-green-700">${farm.name}</button> <span class="text-sm font-normal text-gray-500">(${farm.farm_id_code})</span>
+                            <p class="text-sm text-gray-600">${farm.location || 'ไม่ได้ระบุสถานที่'}</p>
+                        </div>
+                    `;
+                    listElemShare.appendChild(card);
+                });
+            }
+
+            lucide.createIcons();
+        }
+
+        function PopulateFarmSelectors() {
+            for (let i = 0; i < 2; i++){
+                let element;
+                if (i === 0){
+                    element = 'device-farm-selector';
+                } else {
+                    element = 'dashboard-farm-selector';
+                }
+                const selector = document.getElementById(element);
+                const currentSelection = selector.value;
+                selector.innerHTML = '<option value="">-- เลือกไร่/สวน --</option>';
+
+                const mergedFarm = [...allFarms, ...sharedFarms];
+
+                mergedFarm.forEach(farm => {
+                    const option = document.createElement('option');
+                    option.value = farm.farm_id_code; // Use farm_id_code for the selector value
+                    option.textContent = `${farm.name}`;
+                    selector.appendChild(option);
+                });
+                // Re-select the previously selected farm if it still exists
+                selector.value = currentSelection;
+                document.getElementById('add-device-btn').disabled = !currentSelection || sharedFarms.includes(currentSelection);
+            }                
+        }
+        
+        function showFarmForm(mode = 'create', farm = null) {
+            const formContainer = document.getElementById('farm-form-container');
+            const form = document.getElementById('farm-form');
+            const title = document.getElementById('farm-form-title');
+            const submitBtn = document.getElementById('farm-submit-btn');
+
+            if (mode === 'create') {
+                title.textContent = 'เพิ่มไร่/สวนใหม่';
+                submitBtn.textContent = 'บันทึกไร่สวน';
+                form.dataset.mode = 'create';
+                form.dataset.farmId = '';
+                form.reset();
+                document.getElementById('farm-id-code').disabled = false;
+            } else if (mode === 'edit' && farm) {
+                title.textContent = `แก้ไขไร่/สวน: ${farm.name}`;
+                submitBtn.textContent = 'Update Farm';
+                form.dataset.mode = 'edit';
+                form.dataset.farmId = farm.id;
+                document.getElementById('farm-id-code').value = farm.farm_id_code;
+                document.getElementById('farm-name').value = farm.name;
+                document.getElementById('farm-location').value = farm.location || '';
+                document.getElementById('farm-id-code').disabled = true; // Farm ID Code is immutable on edit
+                document.getElementById('farm-viewer').value = farm.viewer;
+            }
+
+            formContainer.classList.remove('hidden');
+            window.scrollTo(0, 0); // Scroll to form
+        }
+
+        async function handleFarmFormSubmit(event) {
+            event.preventDefault();
+            
+            const form = event.currentTarget;
+            const isEdit = form.dataset.mode === 'edit';
+            const farmId = form.dataset.farmId;
+            
+            const farmIdCode = document.getElementById('farm-id-code').value.trim();
+            const name = document.getElementById('farm-name').value.trim();
+            const location = document.getElementById('farm-location').value.trim();
+            const farmViewer = document.getElementById('farm-viewer').value.trim();
+
+            if (!farmIdCode || !name) {
+                showStatus("โปรดระบุรหัสและชื่อไร่/สวน.", "warning");
+                return;
+            }
+
+            const payload = {
+                farm_id_code: farmIdCode,
+                name: name,
+                location: location,
+                viewer: farmViewer
+            };
+            
+            let url = '';
+            let method = '';
+            
+            if (isEdit) {
+                url = `${API_BASE_URL}/farms/${farmId}`;
+                method = 'PUT';
+            } else {
+                url = `${API_BASE_URL}/farms/create`;
+                method = 'POST';
+            }
+
+            const data = await makeApiCall(url, method, payload);
+
+            if (data) {
+                const action = isEdit ? 'แก้ไข' : 'สร้าง';
+                showStatus(`ไร่/สวน '${name}' ถูก${action}เรียบร้อยแล้ว`, "success");
+                
+                form.reset();
+                document.getElementById('farm-form-container').classList.add('hidden');
+                
+                // Refresh farm list
+                await fetchFarms(true);
+            }
+        }
+        
+        async function deleteFarm(farmId, farmIdCode, farmName) {
+            const url = `${API_BASE_URL}/farms/${farmId}/delete`;
+            const data = await makeApiCall(url, 'POST', {farm_id_code: farmIdCode});
+            
+            if (data) {
+                showStatus(`ไร่/สวน '${farmName}' ถูกลบเรียบร้อยแล้ว`, "success");
+                await fetchFarms(true);
+                // Also refresh devices if the deleted farm was selected
+                fetchDevices('device-farm-selector'); 
+            }
+        }
+
+        function handleLogout() {
+            localStorage.removeItem('userId');
+            localStorage.removeItem('username');
+            currentUserId = null;
+            currentUsername = null;
+            authToken = null;
+            allFarms = [];
+            
+            switchView('auth-view');
+            document.getElementById('nav-bar').classList.add('hidden');
+            showStatus("คุณได้ออกจากระบบ.", "info");
+        }
+
+        // --- DEVICE MANAGEMENT FUNCTIONS (NEW) ---
+
+        // Fetch devices for the currently selected farm
+        async function fetchDevices(selector='device-farm-selector', clickFarmId=null, renderPanel = true) {
+            let farmIdCode;
+            if (clickFarmId){
+                farmIdCode = clickFarmId;
+            } else {
+                farmIdCode = document.getElementById(selector).value;
+            }
+            const listElem = document.getElementById(`${selector.includes('device') ? 'devices' : 'panels'}-list`);
+            const addDeviceBtn = document.getElementById('add-device-btn');
+            addDeviceBtn.disabled = !farmIdCode;
+            allDevices = [];
+
+            if (!farmIdCode) {
+                 listElem.innerHTML = `<p class="text-gray-500 col-span-full">เลือกไร่/สวนเพื่อดู${selector.includes('device') ? 'รายการอุปกรณ์' : 'แผงควบคุม'}</p>`;
+                 return;
+            }
+
+            listElem.innerHTML = '<p class="text-blue-500 flex items-center col-span-full"><i data-lucide="loader-2" class="w-4 h-4 mr-2 animate-spin"></i> กำลังโหลดรายการ...</p>';
+            lucide.createIcons();
+
+            const payload = { farm_id_code: farmIdCode };
+            const data = await makeApiCall(`${API_BASE_URL}/devices`, 'POST', payload);
+
+            if (data) {
+                allDevices = data;
+                allDevices.sort((a, b) => a.device_id_code.localeCompare(b.device_id_code));
+                if (selector=='device-farm-selector'){
+                    const activeCount = globalData.filter(row => 
+                        allDevices.some(device => device.device_id_code === row.device_id)
+                    ).length;
+                    document.getElementById('farm-total-devices-stat').textContent = activeCount;
+                    document.getElementById('device-total-devices-stat').textContent = activeCount;
+                    renderDevices(allDevices);
+                } else if (renderPanel) {
+                    renderPanels(allDevices,farmIdCode);
+                }
+                
+                showStatus(`พบอุปกรณ์ ${data.length} รายการจากไร่/สวน ${farmIdCode}`, 'info');
+            } else {
+                 // Clear the list if the API call fails or returns no devices
+                 listElem.innerHTML = '<p class="text-gray-500 col-span-full">ยังไม่มีรายการอุปกรณ์ของไร่/สวนนี้ สามารถเพิ่มได้จากหน้า จัดการอุปกรณ์</p>';
+            }
+            document.getElementById('farm-active-devices-stat').textContent = globalData.filter(row => allDevices.find(device => device.device_id_code === row.device_id)).length;
+            document.getElementById('device-active-devices-stat').textContent = globalData.filter(row => allDevices.find(device => device.device_id_code === row.device_id)).length;
+        }
+
+        // Render devices list
+        function renderDevices(devices) {
+            const listElem = document.getElementById('devices-list');
+            if (!listElem) {
+                console.error("Element with ID 'devices-list' not found.");
+                return;
+            }
+            listElem.innerHTML = '';
+
+            if (devices.length === 0) {
+                listElem.innerHTML = '<p class="text-gray-500 col-span-full p-4 text-center">ยังไม่มีรายการอุปกรณ์ของไร่/สวนนี้ สามารถเพิ่มได้จากด้านบน</p>';
+                return;
+            }
+
+            devices.forEach(device => {
+                const isActuator = device.type != 'เซ็นเซอร์'; 
+                const card = document.createElement('div');
+                card.className = 'bg-white rounded-xl shadow-lg border border-gray-100 overflow-hidden transition-all duration-300 hover:shadow-xl';
+
+                let deviceSpecificContent = '';
+                
+                // Main card HTML structure
+                card.innerHTML = `
+                    <div class="device-card-header bg-gray-50 p-4 flex items-center justify-between border-b border-gray-100">
+                        <div class="flex items-center space-x-3">
+                            <i data-lucide="${isActuator ? 'settings-2' : 'thermometer'}" class="w-7 h-7 p-1 rounded-full ${isActuator ? 'text-white bg-blue-500' : 'text-white bg-orange-500'}"></i>
+                            <div>
+                                <p class="text-xl font-bold text-gray-800">${device.name}</p>
+                                <p class="text-xs text-gray-500">ID: ${device.device_id_code} | Type: ${device.type}</p>
+                            </div>
+                        </div>
+                        <div class="space-x-1 flex items-center">
+                            <!-- REMOVED "View History" button -->
+                            <button title="Edit Device" class="text-blue-500 hover:text-blue-700 p-2 rounded-full hover:bg-blue-50 transition device-edit-btn" data-action="edit-device" data-id="${device.id}">
+                                <i data-lucide="pencil" class="w-4 h-4"></i>
+                            </button>
+                            <button title="Delete Device" class="text-red-500 hover:text-red-700 p-2 rounded-full hover:bg-red-50 transition device-delete-btn" data-action="delete-device" data-id="${device.id}" data-name="${device.name}">
+                                <i data-lucide="trash-2" class="w-4 h-4"></i>
+                            </button>
+                        </div>
+                    </div>
+                `;
+                listElem.appendChild(card); 
+            });
+
+            // Re-create Lucide icons after adding new HTML content
+            if (typeof lucide !== 'undefined' && lucide.createIcons) {
+                lucide.createIcons();
+            }
+        }
+
+        // Show Device Form
+        function showDeviceForm(mode = 'create', device = null) {
+            const formContainer = document.getElementById('device-form-container');
+            const form = document.getElementById('device-form');
+            const title = document.getElementById('device-form-title');
+            const submitBtn = document.getElementById('device-submit-btn');
+            const selectedFarmIdCode = document.getElementById('device-farm-selector').value;
+            const deviceIdCodeInput = document.getElementById('device-id-code');
+            const deviceTypeSelector = document.getElementById('device-type');
+
+            // Populate Device Type Selector
+            deviceTypeSelector.innerHTML = DEVICE_TYPES.map(type => `<option value="${type}">${type}</option>`).join('');
+
+            // Set the Farm ID Code display
+            document.getElementById('device-farm-code-display').value = selectedFarmIdCode;
+            document.getElementById('device-farm-code-display').textContent = selectedFarmIdCode;
+            form.dataset.farmIdCode = selectedFarmIdCode;
+
+            if (selectedFarmIdCode === '') {
+                showStatus("กรุณาเลือกฟาร์มก่อน", "warning");
+                return;
+            }
+
+            if (mode === 'create') {
+                title.textContent = `เพิ่มอุปกรณ์ใหม่สำหรับไร่/สวน ${selectedFarmIdCode}`;
+                submitBtn.textContent = 'สร้างอุปกรณ์';
+                form.dataset.mode = 'create';
+                form.dataset.deviceId = '';
+                form.reset();
+                deviceIdCodeInput.disabled = false;
+                deviceIdCodeInput.required = true;
+            } else if (mode === 'edit' && device) {
+                title.textContent = `แก้ไขอุปกรณ์: ${device.name}`;
+                submitBtn.textContent = 'แก้ไขอุปกรณ์';
+                form.dataset.mode = 'edit';
+                form.dataset.deviceId = device.id;
+
+                deviceIdCodeInput.value = device.device_id_code;
+                deviceIdCodeInput.disabled = true; // Device ID Code is immutable on edit
+                deviceIdCodeInput.required = false;
+                
+                document.getElementById('device-name').value = device.name;
+                document.getElementById('device-type').value = device.type;
+                document.getElementById('device-unit').value = device.config.unit;
+                document.getElementById('panel-color').value = device.config.color;
+            }
+
+            formContainer.classList.remove('hidden');
+            window.scrollTo(0, 0); // Scroll to form
+        }
+
+        // Handle Device Form Submission
+        async function handleDeviceFormSubmit(event) {
+            event.preventDefault();
+            const form = event.currentTarget;
+            const isEdit = form.dataset.mode === 'edit';
+            const deviceId = form.dataset.deviceId;
+            const farmIdCode = form.dataset.farmIdCode;
+            
+            const deviceIdCode = document.getElementById('device-id-code').value.trim();
+            const name = document.getElementById('device-name').value.trim();
+            const type = document.getElementById('device-type').value;
+            const unit = document.getElementById('device-unit').value;
+            const color = document.getElementById('panel-color').value;
+
+            if (!farmIdCode || !name || !type || (!isEdit && !deviceIdCode)) {
+                showStatus("จำเป็นต้องระบุ ไร่/สวน, ชื่อ, ชนิด, และรหัสอุปกรณ์ (สำหรับอุปกรณ์ใหม่)", "warning");
+                return;
+            }
+
+            let payload = {
+                name: name,
+                type: type,
+                user_id: currentUserId,
+                config: {
+                    unit: unit,
+                    color: color,
+                    status: type=='เซ็นเซอร์' ? 1 : -1,
+                    mode: type=='อุปกรณ์ขับ' ? 'manual': ''
+                }
+            };
+            
+            let url = '';
+            let method = '';
+            
+            if (isEdit) {
+                // PUT for editing
+                url = `${API_BASE_URL}/devices/${deviceId}`;
+                method = 'PUT';
+            } else {
+                // POST for creating
+                url = `${API_BASE_URL}/devices/create`; 
+                method = 'POST';
+                payload = { ...payload, farm_id_code: farmIdCode, device_id_code: deviceIdCode };
+            }
+
+            const data = await makeApiCall(url, method, payload);
+
+            if (data) {
+                const action = isEdit ? 'แก้ไข' : 'สร้าง';
+                showStatus(`อุปกรณ์ '${name}' ถูก${action}เรียบร้อยแล้ว`, "info");
+                
+                form.reset();
+                document.getElementById('device-form-container').classList.add('hidden');
+                
+                // --- FIX: Introduce a small delay after CREATING a new item ---
+                // This helps mitigate eventual consistency issues where the new item 
+                // isn't immediately available for the next fetch/query.
+                if (!isEdit) {
+                    await sleep(500); 
+                }
+                // --- END FIX ---
+                
+                // Refresh device list
+                await fetchDevices('device-farm-selector');
+                showStatus(`อุปกรณ์ '${name}' ถูก${action}เรียบร้อยแล้ว`, "success"); // Final succeess status
+            }
+        }
+
+        // Handle Device Deletion (Uses custom modal)
+        async function deleteDevice(deviceId, deviceIdCode, deviceName) {
+            showConfirmModal(
+                'ยืนยันการลบอุปกรณ์',
+                `คุณตกลงลบอุปกรณ์ "${deviceName}" ใช่หรือไม่? เมื่อลบแล้วไม่สามารถแก้ไขใหม่ได้`,
+                async () => {
+                    const url = `${API_BASE_URL}/devices/${deviceId}/delete`;
+                    const data = await makeApiCall(url, 'POST', {device_id_code: deviceIdCode});
+                    
+                    if (data) {
+                        showStatus(`อุปกรณ์ '${deviceName}' ถูกลบเรียบร้อยแล้ว`, "success");
+                        await fetchDevices('device-farm-selector');
+                    }
+                }
+            );
+        }
+
+        // --- Chart Rendering Functions ---
+
+        // 1. Line Chart Implementation
+        function createLineChart(farmIdCode) {
+            const ctx = document.getElementById('line-chart-panel');
+            // const header = Object.key(data[0]);
+            // const dataPoints = data[header];
+            
+            // Destroy previous chart instance if it exists to prevent memory leaks
+            const existingChart = Chart.getChart('line-chart-panel');
+            if (existingChart) {
+                existingChart.destroy();
+            }
+
+            if (!globalData) return;
+            const dataSets = aggregateDataByDeviceId(globalData);
+            const timeLabel = [... new Set(globalData.map(row => row.time.split(".")[0]))];
+
+            var staticChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: timeLabel.map(row => row.split("T")[1].replace(":00Z","")), //dataPoints.map(p => p.time), // Assuming dataPoints has time labels
+                    datasets: dataSets
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: { beginAtZero: true }
+                    },
+                    plugins: {
+                        legend: { display: false }
+                    }
+                }
+            });
+            chartInstance[`${farmIdCode}/line`] = staticChart;
+        }
+
+        function aggregateDataByDeviceId(rawData) {
+            // Use the reduce method to build the final aggregated object
+            const groupedData = rawData.reduce((accumulator, currentItem) => {
+                const { time, value, field, measurement, deployment, device_id, farm_id,host, label, topic,  } = currentItem;
+                const devicePath = `${farm_id}/${device_id}`;
+                
+                // 1. Check if we've already started the data structure for this device_id
+                if (!accumulator[devicePath]) {
+                    // If not, initialize it with the label and empty arrays for data and time
+                    accumulator[devicePath] = {
+                        label: label, // Assuming the unit is the same for all measurements of one device_id
+                        data: [],
+                        borderColor: allDevices.find(d => d.device_id_code == device_id).config.color,
+                        tension: 0.3,
+                        fill: true,
+                    };
+                }
+
+                // 2. Push the current measurement's value and time into the respective arrays
+                accumulator[devicePath].data.push(value);
+
+                return accumulator;
+            }, {}); // The initial value for the accumulator is an empty object {}
+            return Object.values(groupedData);
+        }
+
+        // 2. Gauge (Doughnut) Implementation
+        function createGaugeChart(device, canvasId) {
+            if (!globalData.find(row => row.device_id==device.device_id_code)) return;
+            globalData.sort((a, b) => new Date(b.time) - new Date(a.time))
+            const updatingValue = parseFloat(globalData.find(row => row.device_id==device.device_id_code).value);
+            const ctx = document.getElementById(canvasId);
+            const remaining = 100 - updatingValue;
+
+            // Destroy previous chart instance if it exists
+            const existingChart = Chart.getChart(canvasId);
+            if (existingChart) {
+                existingChart.destroy();
+            }
+            
+            var staticChart = new Chart(ctx, {
+                type: 'doughnut',
+                data: {
+                    labels: ['Current Value', 'Remaining'],
+                    datasets: [{
+                        data: [updatingValue, remaining > 0 ? remaining : 0],
+                        backgroundColor: [device.config.color, 'rgb(229, 231, 235)'], // Gray for remaining
+                        borderWidth: 0,
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: true,
+                    circumference: 180, // Half circle
+                    rotation: -90,      // Start at the bottom
+                    cutout: '70%',
+                    plugins: {
+                        tooltip: { enabled: false },
+                        legend: { display: false }
+                    }
+                },
+                // Display the value in the center
+                plugins: [{
+                    id: 'textCenter',
+                    beforeDatasetsDraw(chart, args, pluginOptions) {
+                        const { ctx, data } = chart;
+                        const currentValue = data.datasets[0].data[0] || 0;
+                        const unit = device.config.unit || '';
+                        const color = device.config.color || '#000';
+                        ctx.save();
+                        ctx.font = 'bold 1.5rem sans-serif';
+                        ctx.fillStyle = color;
+                        ctx.textAlign = 'center';
+                        ctx.textBaseline = 'middle';
+                        const x = chart.getDatasetMeta(0).data[0].x;
+                        const y = chart.getDatasetMeta(0).data[0].y;
+                        ctx.fillText(`${currentValue} ${unit}`, x, y - 20);
+                        ctx.font = '0.75rem sans-serif';
+                        ctx.fillStyle = 'rgb(107, 114, 128)';
+                        ctx.fillText(`Percentage: ${Number(currentValue).toFixed(0)}%`, x, y); 
+                        ctx.restore();
+                    }
+                }]
+            });
+            ctx.style.float = "right";
+            chartInstance[`${device.farm_id_code}/${device.device_id_code}`] = staticChart;
+        }
+        
+        async function showPanelSetting(mode, deviceIdCode) {
+            const device = allDevices.find(device => device.device_id_code === deviceIdCode);
+            const form = document.getElementById(`panel-form-${mode}`);
+            const selectedFarmIdCode = document.getElementById('dashboard-farm-selector').value;
+            form.dataset.deviceId = device.id;
+            form.dataset.farmIdCode = selectedFarmIdCode;
+            document.getElementById(`panel-form-${mode}-container`).classList.remove('hidden');
+            document.getElementById('panels-list').classList.add('hidden');
+            if(mode==='auto'){
+                document.getElementById('panel-setting-sensor').innerHTML = allDevices.filter(device => device.type === 'เซ็นเซอร์').map(device => device.name).map(name => `<option value="${name}">${name}</option>`).join('');
+                const feedbackIdCode = allDevices.find(device => device.device_id_code === deviceIdCode).config.feedback;
+                const feedbackName = allDevices.find(device => device.device_id_code === feedbackIdCode).name;
+                const isAuto = device.config.mode==='auto';
+                document.getElementById('panel-setting-sensor').value = isAuto ? feedbackName : '';
+
+                if (isAuto) {callDeviceDetail(feedbackName);}
+                document.getElementById(`setting-value`).value = isAuto ? device.config.setting1 : '';
+                document.getElementById(`panel-setting-criteria`).value = isAuto ? device.config.setting2 : '';
+            } else {
+                const isTimer = device.config.mode==='timer';
+                document.getElementById(`setting-value-1`).value = isTimer ? device.config.setting1 : '';
+                document.getElementById(`setting-value-2`).value = isTimer ? device.config.setting2 : '';
+                document.getElementById(`panel-setting-unit`).value = isTimer ? device.config.setting3 : '';
+                document.querySelectorAll('input[type="checkbox"]').forEach(box => {
+                    box.checked = !isTimer ? false : box.id === 'checkAll' ? device.config.setting4.length === 7 : device.config.setting4.includes(box.id);
+                });
+            }
+        }
+
+        // Call Device Id and Type on Panel Form
+        async function callDeviceDetail(deviceName){
+            const deviceIdCode = allDevices.find(device => device.name === deviceName).device_id_code;
+            document.getElementById('auto-device-code-display').textContent = deviceIdCode;
+            document.getElementById('auto-device-code-display').value = deviceIdCode;
+        }
+
+        async function handlePanelSetting(mode,event=null, controlDeviceId=null) {
+            let form;
+            let deviceId;
+            let payload;
+            if (mode != 'manual'){
+                event.preventDefault();
+                form = event.currentTarget;
+                deviceId = form.dataset.deviceId;
+            } else {
+                deviceId = controlDeviceId;
+            }
+            const device = allDevices.find(device => device.id == deviceId)
+            device.config.mode=mode;
+            if (mode==='auto'){
+                payload = {
+                name: device.name,
+                type: device.type,
+                config: {
+                    unit: device.config.unit,
+                    status: device.config.status,
+                    mode: 'auto',
+                    setting1: document.getElementById('setting-value').value,
+                    setting2: document.getElementById('panel-setting-criteria').value,
+                    feedback: document.getElementById('auto-device-code-display').value
+                    }
+                };
+            } else if (mode==='timer') {
+                const days = document.querySelectorAll('.day');
+                let settingDay = [];   
+                days.forEach(day => {
+                    if(day.checked){
+                        settingDay.push(day.value);
+                    }
+                });
+                payload = {
+                name: device.name,
+                type: device.type,
+                config: {
+                    unit: device.config.unit,
+                    status: device.config.status,
+                    mode: 'timer',
+                    setting1: document.getElementById('setting-value-1').value,
+                    setting2: document.getElementById('setting-value-2').value,
+                    setting3: document.getElementById('panel-setting-unit').value,
+                    setting4: settingDay
+                    }
+                };
+            } else {
+                payload = {
+                name: device.name,
+                type: device.type,
+                config: {
+                    unit: device.config.unit,
+                    status: device.config.status,
+                    mode: 'manual'
+                    }
+                };
+            }
+            const data = await makeApiCall(`${API_BASE_URL}/devices/${deviceId}`, 'PUT', payload);
+            if (data) {    
+                const commandButton = document.getElementById(`command-button-${device.id}`);
+                if(mode!='manual'){
+                    showStatus(`หน้าข้อมูล '${device.name}' ถูกแก้ไขเรียบร้อยแล้ว กำลังโหลดหน้าแดชบอร์ด`, "info");
+                    document.getElementById(`panel-form-${mode}-container`).classList.add('hidden');
+                    document.getElementById('panels-list').classList.remove('hidden');
+                    document.getElementById(`${device.config.mode}-button-${device.id}`).style.color = "#000000";
+                    document.getElementById(`${device.config.mode=='timer'?'auto':'timer'}-button-${device.id}`).style.color ="#7c7c7c";
+                    commandButton.onclick = (e) => handlePanelSetting(mode, e);   
+                    form.reset();
+                } else {
+                    document.getElementById(`timer-button-${device.id}`).style.color = "#7c7c7c";
+                    document.getElementById(`auto-button-${device.id}`).style.color = "#7c7c7c";
+                    commandButton.style.backgroundColor = device.config.status > 0 ? 'bg-green-600' : 'bg-red-600';
+                    commandButton.innerHTML = `<i data-lucide="power" class="w-4 h-4 mr-1"></i>${device.config.status > 0 ? 'เปิด' : 'ปิด'}`;
+                    commandButton.onclick = () => controlDevice(device.device_id_code);
+                    if (typeof lucide !== 'undefined' && lucide.createIcons) {
+                        lucide.createIcons();
+                    }
+                }
+                await fetchDevices('dashboard-farm-selector');
+            }
+        }
+
+        // --- UI Rendering and Event Handlers (unchanged logic) ---
+
+        async function renderPanels(devices,farmIdCode) {
+            const listElem = document.getElementById('panels-list');
+            listElem.innerHTML = '';
+            listElem.innerHTML = `
+                <div id="gauges-list" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 auto-rows-min gap-4 p-4">
+                </div>
+                <div class="grid gird-cols-1 gap-6 p-4">
+                    <div id="line-chart" class="p-1 rounded-xl border-l-4 border-blue-500 bg-white"></div>
+                    <div id="buttons-list" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"></div>
+                </div>`
+            const lineChart = document.getElementById('line-chart');
+            lineChart.innerHTML = `
+                <div class="p-2 flex items-center justify-between border-b border-gray-100">
+                    <h3 class="text-xl font-bold text-gray-800">ประวัติ</h3>
+                    <div></div>
+                        <div id="download-panel" class="space-x-1 flex items-center justify-between border-b">
+                    </div>
+                </div>                    
+                <div id = "line-chart-card" style="height: 500px;">
+                </div>
+            `;
+            const downloadButton = document.createElement('div');
+            downloadButton.setAttribute('id',`download-button`);
+            downloadButton.classList.add('flex', 'justify-between', 'items-center');
+            downloadButton.innerHTML=`<select 
+                                        id="panel-download-select" 
+                                        onchange="handleRangeSelection()" 
+                                        required 
+                                        class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 transition duration-150 ease-in-out shadow-sm"
+                                    >
+                                        <option value="6" selected>6Hr</option>
+                                        <option value="12">12Hr</option>
+                                        <option value="24">1 วัน</option>
+                                        <option value="168">1 สัปดาห์</option>
+                                        <option value="custom">กำหนดเอง</option>
+                                    </select>
+                                    <button onclick="downloadFile()" class="text-red-500 hover:text-red-700 p-2 rounded-full hover:bg-red-50 transition panel-delete-btn" data-action="download">
+                                        <i data-lucide="download" class="w-4 h-4"></i>
+                                    </button>`;
+            const customTimeModal = document.createElement('div');
+            customTimeModal.setAttribute('id',`custom-date-modal`);
+            customTimeModal.classList.add('modal-overlay', 'fixed', 'inset-0','z-50', 'flex','items-center','justify-center', 'hidden');
+            customTimeModal.innerHTML=`<div class="bg-white rounded-xl shadow-2xl p-6 w-full max-w-sm m-4 transform transition-all">
+                                        <div class="flex justify-between items-center mb-4">
+                                            <h3 class="text-lg font-semibold text-gray-900" id="modal-title">กำหนดช่วงเวลาเอง</h3>
+                                            <button onclick="closeCustomDateModal()" class="text-gray-400 hover:text-gray-600 transition">
+                                                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                                            </button>
+                                        </div>
+                                        
+                                        <p class="text-sm text-gray-500 mb-4">เลือกวันที่เริ่มต้นและสิ้นสุดสำหรับการดาวน์โหลดข้อมูล</p>
+
+                                        <div class="space-y-4">
+                                            <div>
+                                                <label for="start-date" class="block text-sm font-medium text-gray-700">วันที่เริ่มต้น</label>
+                                                <input type="date" id="start-date" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500" value="">
+                                            </div>
+                                            <div>
+                                                <label for="end-date" class="block text-sm font-medium text-gray-700">วันที่สิ้นสุด</label>
+                                                <input type="date" id="end-date" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500" value="">
+                                            </div>
+                                        </div>
+
+                                        <div class="mt-6 flex justify-end space-x-3">
+                                            <button 
+                                                onclick="closeCustomDateModal()" 
+                                                class="px-4 py-2 text-sm font-medium rounded-lg text-gray-700 bg-gray-100 hover:bg-gray-200 transition"
+                                            >
+                                                ยกเลิก
+                                            </button>
+                                            <button 
+                                                onclick="handleCustomDownload()" 
+                                                class="px-4 py-2 text-sm font-medium rounded-lg text-white bg-blue-600 hover:bg-blue-700 transition shadow-md"
+                                            >
+                                                โหลดข้อมูล
+                                            </button>
+                                        </div>
+                                        <p id="error-message" class="text-red-500 text-sm mt-3 hidden"></p>
+                                    </div>`;
+            document.getElementById(`download-panel`).appendChild(downloadButton);
+            document.getElementById(`download-panel`).appendChild(customTimeModal);
+            document.getElementById(`line-chart-card`).innerHTML = `
+            <canvas id="line-chart-panel"></canvas> `;
+
+            createLineChart(farmIdCode);
+            await fetchDownloadingData();
+            devices.forEach(device => {
+                const card = document.createElement('div');
+                card.id = `panel-card-${device.id}`;
+                card.className = `p-1 rounded-xl border-l-4 border-${device.type=='เซ็นเซอร์' ? 'green' : 'red'}-500 bg-gray-100`;
+                if (device.type === 'เซ็นเซอร์') {
+                    card.style.height = '200px';
+                    card.innerHTML = `
+                    <h3 class="text-xl font-bold text-gray-800">${device.name}</h3>
+                    <canvas id="chart-panel-${device.id}"></canvas> 
+                    `
+                    document.getElementById('gauges-list').appendChild(card);
+                    createGaugeChart(device, `chart-panel-${device.id}`); 
+                } else {
+                    card.style.height = '150px';
+                    card.innerHTML = 
+                    `<h3 class="text-xl font-bold text-gray-800">${device.name}</h3>
+                    <div class="flex space-x-1 items-center justify-between border-t">
+                        <p class="text-sm font-medium text-gray-700 mt-3 mb-2 pt-2">โหมด:</p>
+                        <div class="space-x-1 flex items-center justify-between">
+                            <button id="timer-button-${device.id}" onclick="showPanelSetting('timer','${device.device_id_code}')" title="Setting Timer" class="${device.config.mode == 'timer' ? 'text-black' : 'text-gray-400'} p-2 rounded-full hover:bg-blue-50 transition panel-edit-btn" data-action="edit-timer" data-id="${device.id}">
+                                <i data-lucide="timer" class="w-4 h-4 mr-2"></i>
+                            </button>
+                            <button id="auto-button-${device.id}" onclick="showPanelSetting('auto','${device.device_id_code}')" title="Setting Auto" class="${device.config.mode == 'auto' ? 'text-black' : 'text-gray-400'} p-2 rounded-full hover:bg-blue-50 transition panel-edit-btn" data-action="edit-auto" data-id="${device.id}">
+                                <i data-lucide="thermometer-sun" class="w-4 h-4 mr-2"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="flex space-x-3">
+                        <button id="command-button-${device.id}" class="text-white text-sm font-semibold py-2 px-4 rounded-lg flex items-center transition duration-200 shadow-md hover:shadow-lg" 
+                            style="background-color: ${device.config.status > 0 ? '#1cb91c' : '#b91c1c'}"
+                            onclick="${device.config.mode!='manual' ? `handlePanelSetting('manual',null, controlPanelId = ${device.id})` : `controlDevice('${device.device_id_code}')`}">
+                            <i data-lucide="power" class="w-4 h-4 mr-1"></i> ${device.config.status > 0 ? 'เปิด' : 'ปิด'}
+                        </button>
+                    </div>`;
+                    document.getElementById('buttons-list').appendChild(card);
+                }
+            });
+
+            if (typeof lucide !== 'undefined' && lucide.createIcons) {
+                lucide.createIcons();
+            }
+        }
+
+        // Handle Device Control (Pump)
+        async function controlDevice(deviceIdCode) {
+            const device = allDevices.find(device => device.device_id_code === deviceIdCode);
+            if(device.config.status===1){
+                device.config.status = -1;
+            } else {
+                device.config.status = 1;
+            }
+            document.getElementById(`command-button-${device.id}`).style.backgroundColor = device.config.status > 0 ? '#1cb91c' : '#b91c1c';
+            document.getElementById(`command-button-${device.id}`).innerHTML = `<i data-lucide="power" class="w-4 h-4 mr-1"></i>${device.config.status > 0 ? 'เปิด' : 'ปิด'}`;
+            lucide.createIcons();
+            // const farmSelector = document.getElementById('device-farm-selector');
+            // const farmIdCode = farmSelector.value;            
+            const payload = {
+                username: currentUsername,
+                farm_id_code: device.farm_id_code,
+                device_id_code: device.device_id_code,
+                command: device.config.status,
+            };
+            
+            const url = `${API_BASE_URL}/devices/control`;
+            const data = await makeApiCall(url, 'POST', payload);
+
+            if (data) {
+                showStatus(`สั่งค่า ${device.config.status}สำหรับอุปกรณ์ ${device.device_id_code} เรียบร้อยแล้ว`, "success");
+            }
+        }
+
+        socket.on('new_telemetry', (data) => {
+            // 1. Find the devices in your local state that match the incoming data
+            const readingPanels = allDevices.filter(device => device.device_id_code === data.device_id_code && device.user_id === currentUserId);
+            console.log("Receiving socketIO data...");
+
+            if (readingPanels.length > 0) {          
+                readingPanels.forEach(panel => {
+                    // REMOVED: fetchDevices(...) - Never fetch/render the whole UI in a socket loop!
+
+                    // 2. Access the specific chart instance
+                    const chartKey = `${panel.farm_id_code}/${panel.device_id_code}`;
+                    const chart = chartInstance[chartKey];
+
+                    if (chart) {
+                        // 3. Update the data (Fixed the common Chart.js dataset index error)
+                        // Assuming a Gauge/Doughnut chart based on your 100-value logic
+                        chart.data.datasets[0].data = [
+                            data.value, 
+                            Math.max(0, 100 - data.value)
+                        ];
+
+                        // 5. Redraw the chart without heavy animations
+                        chart.update('quiet');
+                    }
+                });
+            }
+        });
+
+        socket.on('command', (data) => {
+            const device = allDevices.find(device => device.device_id_code === data.device_id_code);
+            document.getElementById(`${data.mode}-button-${device.id}`).style.color = "#000000";
+            document.getElementById(`${data.mode=='timer' ? 'auto' : 'timer'}-button-${device.id}`).style.color = "#7c7c7c";
+            document.getElementById(`command-button-${device.id}`).style.backgroundColor = data.value == "1" ? "#1cb91c" : "#b91c1c";
+            document.getElementById(`command-button-${device.id}`).innerHTML = `<i data-lucide="power" class="w-4 h-4 mr-1"></i>${data.value == "1" ? 'เปิด' : 'ปิด'}`;
+            if (typeof lucide !== 'undefined' && lucide.createIcons) {
+                lucide.createIcons();
+            }
+            console.log("Updating Actuator Status...");
+        });
+
+        // Listener for connection/disconnection status (optional)
+        socket.on('connect', () => {
+            console.log('SocketIO: Connected to Flask Real-Time Server.');
+        });
+
+        socket.on('disconnect', () => {
+            console.warn('SocketIO: Disconnected from Flask Real-Time Server.');
+        });
+        
+        // --- INITIALIZATION ---
+        document.addEventListener('DOMContentLoaded', () => {
+            lucide.createIcons();
+//            setupStaticListeners();
+
+            function startUserSession(userId, username) {
+                if (userId && username) {
+                    switchView('farm-management-view', true);
+
+                    // This is the CRITICAL call, now wrapped in the reusable function
+                    console.log("Setting up real-time data listeners from Event Listener for user:", userId);
+                }
+            }
+
+            // Set initial view based on local storage presence
+            if (currentUserId && currentUsername) {
+                startUserSession(currentUserId, currentUsername);
+
+            } else {
+                switchView('auth-view', false);
+            }
+            
+            // Global event listener for Farm Management List actions (Edit/Delete)
+            document.getElementById('farms-list').addEventListener('click', (e) => {
+                const target = e.target.closest('button');
+                if (!target) return;
+
+                const action = target.dataset.action;
+                const id = parseInt(target.dataset.id, 10);
+                const farm = allFarms.find(f => f.id === id);
+
+                if (action === 'edit-farm' && farm) {
+                    showFarmForm('edit', farm);
+                } else if (action === 'delete-farm' && farm) {
+                    showConfirmModal(
+                        'ยืนยันการลบ',
+                        `คุณยืนยันการลบไร่/สวน "${farm.name}" และรายละเอียดต่างๆ ใช่หรือไม่? การลบนี้ไม่สามารถแก้ไขได้`,
+                        () => deleteFarm(farm.id, farm.farm_id_code, farm.name)
+                    );
+                }
+            });
+
+            // Global event listener for Device Management List actions (Edit/Delete)
+            document.getElementById('devices-list').addEventListener('click', (e) => {
+                const target = e.target.closest('button');
+                if (!target) return;
+
+                const action = target.dataset.action;
+                const id = parseInt(target.dataset.id, 10);
+                const device = allDevices.find(d => d.id === id);
+                const deviceName = target.dataset.name;
+
+                if (action === 'edit-device' && device) {
+                    showDeviceForm('edit', device);
+                } else if (action === 'delete-device' && id) {
+                    deleteDevice(id, device.device_id_code, deviceName);
+                }
+            });
+            
+            // Setup listener for Add Device button
+            document.getElementById('add-device-btn').onclick = () => {
+                showDeviceForm('create');
+            };
+        });
+
+        menuToggle.addEventListener('click', () => {
+            const isMenuOpen = mobileMenu.classList.toggle('hidden');
+            
+            // Change icon from 'menu' (hamburger) to 'x' (close)
+            if (isMenuOpen) {
+                menuIcon.setAttribute('data-lucide', 'x');
+            } else {
+                menuIcon.setAttribute('data-lucide', 'menu');
+            }
+            // Re-render the icon change
+            lucide.createIcons(); 
+        });
+
+        function toggleAll(source) {
+            // Get the checked status of the source (master) checkbox
+            const isChecked = source.checked;
+
+            // Use querySelectorAll to get ALL checkbox inputs on the page
+            const checkboxes = document.querySelectorAll('input[type="checkbox"]');
+
+            // Iterate through the list of all checkboxes
+            checkboxes.forEach(checkbox => {
+                // Ensure we don't accidentally uncheck the master checkbox itself in the loop,
+                // although setting it to its own state is harmless.
+                if (checkbox.id !== 'checkAll') {
+                    // Set the checked status of the current checkbox to match the master
+                    checkbox.checked = isChecked;
+                }
+            });
+        }
+
+        function parseFluxCSV(csvText) {
+            const lines = csvText.trim().split('\n');
+            if (lines.length < 2) return [];
+
+            // Find the header row (starts with # or has the result column)
+            const headerLine = lines.find(line => !line.startsWith('#') && line.includes('result'));
+            if (!headerLine) return [];
+
+            const headers = headerLine.split(',').map(h => h.trim());
+            const dataRows = lines.slice(lines.indexOf(headerLine) + 1).filter(line => line.trim() !== '');
+
+            const data = [];
+            dataRows.forEach(row => {
+                const values = row.split(',');
+                if (values.length === headers.length) {
+                    const obj = {};
+                    headers.forEach((header, i) => {
+                        // Clean up unnecessary Flux columns like 'result', 'table', 'start', 'stop'
+                        if (header && !['_start', '_stop', 'result', 'table', 'tag_name'].includes(header)) {
+                            obj[header.replace(/^_/, '')] = values[i];
+                        }
+                    });
+                    data.push(obj);
+                }
+            });
+            return data;
+        }
+
+        function convertToCSV(arr) {
+            const array = [Object.keys(arr[0])].concat(arr);
+            return array.map(it => {
+                // Ensure values are wrapped in quotes if they contain commas
+                return Object.values(it).map(item => {
+                    const value = String(item).replace(/"/g, '""');
+                    return `"${value}"`;
+                }).join(',');
+            }).join('\n');
+        }
+
+        async function fetchDownloadingData(){
+            const rangeTime = document.getElementById(`panel-download-select`).value;
+            // Note: We use the server's time (now()) and query back from there.
+            let fluxQuery;
+            const allDeviceIdCode = allDevices.filter(device => device.type == "เซ็นเซอร์").map(device => device.device_id_code);
+            let filterBuffer = "";
+            allDeviceIdCode.forEach(code => {
+                filterBuffer = filterBuffer + `r["device_id"] == "${code}" or `
+            });
+            filterBuffer = filterBuffer.slice(0,-3);
+            const farmIdCode = document.getElementById('dashboard-farm-selector').value;
+            if (rangeTime === 'custom'){
+                rangeTimes = document.getElementById(`custom-range`).textContent.split(" - ");
+                //                    import "timezone"
+                //    option location = timezone.location(name: "Asia/Bangkok")
+                fluxQuery = `
+                    from(bucket: "${INFLUX_BUCKET}")
+                    |> range(start: ${rangeTimes[0]}T00:00:00.000Z, stop: ${rangeTimes[1]}T23:59:59.000Z)
+                    |> filter(fn: (r) => r["_measurement"] == "${currentUsername}")
+                    |> filter(fn: (r) => r["farm_id"] == "${farmIdCode}")
+                    |> filter(fn: (r) => ${filterBuffer})
+                    |> aggregateWindow(every: 2m, fn: mean, createEmpty: false)
+                    |> timeShift(duration: 7h)
+                    |> yield(name: "mean")
+                `;
+            } else {
+                fluxQuery = `
+                    from(bucket: "${INFLUX_BUCKET}")
+                    |> range(start: -${rangeTime}h)
+                    |> filter(fn: (r) => r["_measurement"] == "${currentUsername}")
+                    |> filter(fn: (r) => r["farm_id"] == "${farmIdCode}")
+                    |> filter(fn: (r) => ${filterBuffer})
+                    |> aggregateWindow(every: 2m, fn: mean, createEmpty: false)
+                    |> timeShift(duration: 7h)
+                    |> yield(name: "mean")
+                `;
+            }
+
+            try {
+                const response = await fetch(`${INFLUX_URL}/api/v2/query?org=${INFLUX_ORG}`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Token ${INFLUX_TOKEN}`,
+                        'Accept': 'application/csv',
+                        'Content-Type': 'application/vnd.flux'
+                    },
+                    body: fluxQuery,
+                });
+
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    throw new Error(`Query failed (${response.status}): ${errorText.substring(0, 200)}...`);
+                }
+
+                const csvText = await response.text();
+                globalData = parseFluxCSV(csvText);
+                
+                if (globalData.length === 0) {
+                    throw new Error("No data found for the specified device and time range.");
+                    globalData = [];
+                }                
+            } catch (error) {
+                console.error("InfluxDB Error:", error);
+                globalData = []; // Clear data on error
+            }
+
+            const dataSets = aggregateDataByDeviceId(globalData);
+            const timeLabel = [... new Set(globalData.map(row => row.time.split(".")[0]))];
+            if (chartInstance != "{}"){
+                console.log(chartInstance);
+                chartInstance[`${farmIdCode}/line`].data = 
+                {
+                    labels: timeLabel.map(row => row.split("T")[1].replace(":00Z","")), //dataPoints.map(p => p.time), // Assuming dataPoints has time labels
+                    datasets: dataSets
+                };
+                chartInstance[`${farmIdCode}/line`].update("quiet");
+            }
+                
+        }
+
+        function closeCustomDateModal(panelId) {
+            document.getElementById(`custom-date-modal`).classList.add('hidden');
+            // Optional: Reset the select box back to "เลือกช่วงเวลา"
+        }
+
+        function handleRangeSelection() {
+            const selectElement = document.getElementById(`panel-download-select`);
+            const selectedValue = selectElement.value;
+
+            // 1. Check if "กำหนดเอง" (Custom) was selected
+            if (selectedValue === 'custom') {
+                document.getElementById(`custom-date-modal`).classList.remove('hidden');
+            } else {
+                // Close modal if it was open (in case of a change from custom back to a preset)
+                document.getElementById(`custom-date-modal`).classList.add('hidden');
+                
+                // 2. If a preset (6, 12, 24, 168) was selected, call the original fetch function
+                if (selectedValue) {
+                    fetchDownloadingData();
+                    document.getElementById(`panel-download-select`).value;
+                }
+            }
+            if (isCustom){
+                document.getElementById(`custom-range`).remove();
+                isCustom=false;
+            }
+        }
+
+        function handleCustomDownload() {
+            const startDateInput = document.getElementById(`start-date`);
+            const endDateInput = document.getElementById(`end-date`);
+            const errorElement = document.getElementById(`error-message`);
+
+            const startDate = startDateInput.value;
+            const endDate = endDateInput.value;
+
+            errorElement.classList.add('hidden');
+            errorElement.textContent = '';
+
+            if (!startDate || !endDate) {
+                errorElement.textContent = 'กรุณาเลือกวันที่เริ่มต้นและสิ้นสุดให้ครบถ้วน';
+                errorElement.classList.remove('hidden');
+                return;
+            }
+
+            if (new Date(startDate) > new Date(endDate)) {
+                 errorElement.textContent = 'วันที่เริ่มต้นต้องไม่เกินวันที่สิ้นสุด';
+                 errorElement.classList.remove('hidden');
+                 return;
+            }
+
+            // Call your actual data fetching function with the custom dates
+            console.log(`--- Custom Download Initiated ---`);
+            console.log(`Start Date: ${startDate}`);
+            console.log(`End Date: ${endDate}`);
+            const customDate = document.createElement('div');
+            customDate.setAttribute('id', `custom-range`);
+            customDate.innerHTML = `${startDate} - ${endDate}`;
+            document.getElementById(`download-button`).appendChild(customDate);
+            isCustom = true;
+            // EXECUTE DOWNLOAD LOGIC HERE (e.g., call API)
+            
+            // ---------------------------------------------
+
+            // Close the modal upon successful execution
+            closeCustomDateModal();
+            
+            // Show a success message (using a simple console log for this example)
+            fetchDownloadingData();
+        }
+
+        /**
+         * Triggers the download of the generated data file.
+         * @param {string} data - The content to download (CSV string).
+         * @param {string} fileName - The name of the file.
+         */
+        function downloadFile() {
+            if (globalData.length === 0) {
+                alert("Please load data first.");
+                return;
+            }
+
+            now = new Date().toISOString().slice(0, 10);
+            let filename = `smartfarm_data_${now}`;
+            let dataToDownload;
+            const format = 'csv';
+
+            // We generate CSV data regardless of the final extension
+            dataToDownload = convertToCSV(globalData);
+
+            if (format === 'csv') {
+                filename += '.csv';
+            } else if (format === 'xlsx') {
+                // NOTE: To truly create an XLSX file, you would need a complex library.
+                // For a simple implementation, we generate CSV data and trick the browser
+                // into using the .xlsx extension. Excel can open CSVs named .xlsx, 
+                // but for complex formatting, this is a limitation.
+                filename += '.xlsx'; 
+            }
+
+            const blob = new Blob([dataToDownload], { type: 'text/csv;charset=utf-8;' });
+            const link = document.createElement("a");
+            
+            // For creating a downloadable link locally
+            const url = URL.createObjectURL(blob);
+            link.setAttribute("href", url);
+            link.setAttribute("download", filename);
+            
+            // Append to body, click, and remove
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(url); // Clean up
+        }
+
+        // =========================================================================
+        // FIX: EXPLICITLY EXPOSE FUNCTIONS TO WINDOW FOR INLINE ONCLICK/ONSUBMIT
+        // =========================================================================
+        // When using <script type="module">, functions are module-scoped
+        // and must be explicitly exported to the global 'window' object 
+        // for inline event handlers (like onclick/onsubmit in the HTML body) to find them.
+        window.switchView = switchView;
+        window.toggleAuthMode = toggleAuthMode;
+        window.handleAuth = handleAuth;
+        window.handleLogout = handleLogout;
+        window.handleFarmFormSubmit = handleFarmFormSubmit;
+        window.showFarmForm = showFarmForm;
+        window.handleDeviceFormSubmit = handleDeviceFormSubmit;
+        window.showDeviceForm = showDeviceForm;
+        window.fetchDevices = fetchDevices;
+        window.renderPanels = renderPanels;
+        window.callDeviceDetail = callDeviceDetail;
+        window.controlDevice = controlDevice;
+        window.changePassword = changePassword;
+        window.showPanelSetting = showPanelSetting;
+        window.handlePanelSetting = handlePanelSetting;
+        window.toggleAll = toggleAll;
+        window.downloadFile = downloadFile;
+        window.fetchDownloadingData = fetchDownloadingData;
+        window.createLineChart = createLineChart;
+        window.handleRangeSelection = handleRangeSelection;
+        window.closeCustomDateModal = closeCustomDateModal;
+        window.handleCustomDownload = handleCustomDownload;
+        // =========================================================================
+    </script>
+</body>
+</html>
