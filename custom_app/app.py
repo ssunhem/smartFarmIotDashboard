@@ -3,21 +3,21 @@ import json
 import eventlet
 import logging
 import sys
-import time
+from datetime import datetime, timezone, timedelta
 
-from datetime import datetime
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template
 from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS 
 from flask_mqtt import Mqtt
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_socketio import SocketIO
+from flask_apscheduler import APScheduler
 
 eventlet.monkey_patch()
 
 # --- Configuration ---
 # Database (SQLite file inside the Docker container)
-db_uri = 'sqlite:////tmp/app.db'
+db_uri = 'postgresql://smartfarm_user:a_very_secure_db_password@postgres_db:5432/sensor_metrics_db'
 
 # --- Flask App Initialization ---
 app = Flask(__name__)
@@ -29,6 +29,8 @@ db = SQLAlchemy(app)
 CORS(app) # Initialize CORS with the Flask app
 # app.config['MQTT_CLIENT_ID'] = 'gunicorn-worker-' + os.urandom(8).hex()
 topic_base = "farm" # Base topic for control and telemetry
+
+scheduler = APScheduler()
 
 # --- START: LOGGING CONFIGURATION ---
 def configure_logging(app):
@@ -66,6 +68,7 @@ app.config['MQTT_KEEPALIVE'] = 5  # set the time interval for sending a ping to 
 app.config['MQTT_TLS_ENABLED'] = False  # set TLS to disabled for testing purposes
 mqtt = Mqtt(app)
 mqtt.subscribe('farm/#')
+weekdays = ["mon","tue","wed","thu","fri","sat","sun"]
 
 # ... (Existing app, db, and cors setup)
 
@@ -122,60 +125,33 @@ class Device(db.Model):
     __tablename__ = 'devices'
     id = db.Column(db.Integer, primary_key=True)
     device_id_code = db.Column(db.String(20), nullable=False)
-    type = db.Column(db.String(50), nullable=False) # e.g., 'Sensor', 'Actuator'
+    type = db.Column(db.String(50), nullable=False)
     name = db.Column(db.String(100), nullable=False)
-    location = db.Column(db.String(100))
-    farm_id = db.Column(db.String(20), db.ForeignKey('farms.farm_id_code'), nullable=False)
-    
-    __table_args__ = (db.UniqueConstraint('farm_id', 'device_id_code', name='_farm_device_uc'),)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    farm_id_code = db.Column(db.String(20), db.ForeignKey('farms.farm_id_code'), nullable=False)
+
+    config_json = db.Column(db.Text, default='[]')
+
+    # device_id_code is unique per (user, farm)
+    __table_args__ = (
+        db.UniqueConstraint('user_id', 'farm_id_code', 'device_id_code', name='_user_farm_device_uc'),
+    )
 
     def to_dict(self):
+        try:
+            config_data = json.loads(self.config_json)
+        except json.JSONDecodeError:
+            config_data = []
+
         return {
             'id': self.id,
             'device_id_code': self.device_id_code,
             'type': self.type,
             'name': self.name,
-            'location': self.location,
-            'farm_id': self.farm_id
-        }
-    
-class DashboardPanel(db.Model):
-    __tablename__ = 'dashboard_panels'
-    id = db.Column(db.Integer, primary_key=True)
-    
-    # Foreign key linking the panel to the User who owns it (mandatory)
-    farm_id = db.Column(db.String(20), db.ForeignKey('farms.farm_id_code'), nullable=False)
-    device_id = db.Column(db.Integer, db.ForeignKey('devices.device_id_code'), nullable=False)
-    # Panel display information
-    panel_id_code = db.Column(db.String(20), nullable=False)
-    name = db.Column(db.String(100), nullable=False)
-    type = db.Column(db.String(20), nullable=False) # e.g., 'LineChart', 'Gauge', 'Button'
-    
-    # Store arbitrary configuration data (e.g., axis ranges, colors, button topics) as JSON text
-    config_json = db.Column(db.Text, default='[]')
-
-    # Optional: Define a relationship back to the User model if needed
-    # owner = db.relationship('User', backref='dashboard_panels', lazy=True)
-
-    def to_dict(self):
-        """Returns a dictionary representation for API serialization."""
-        try:
-            config_data = json.loads(self.config_json)
-        except json.JSONDecodeError:
-            config_data = {} # Fallback if JSON is invalid
-
-        return {
-            'id': self.id,
-            'panel_id_code': self.panel_id_code,
-            'name': self.name,
-            'type': self.type,
-            'farm_id': self.farm_id,
-            'device_id': self.device_id,
+            'farm_id_code': self.farm_id_code,
+            'user_id': self.user_id,
             'config': config_data
         }
-    
-    def __repr__(self):
-        return f'<DashboardPanel {self.id}: {self.name} ({self.type})>'
 
 #--- SocketIO Handlers ---
 @socketio.on('connect')
@@ -186,18 +162,18 @@ def handle_connect():
 @mqtt.on_connect()
 def handle_connect(client, userdata, flags, rc):
     if rc == 0:
-        app.logger.info("✅ MQTT Client Connected successfully. Setting up subscriptions...")
+        # app.logger.info("✅ MQTT Client Connected successfully. Setting up subscriptions...")
         # CRITICAL: Place all your subscriptions here!
         mqtt.subscribe('farm/data/#')
-        app.logger.info("Subscribed to 'farm/data/#'")
+        # app.logger.info("Subscribed to 'farm/data/#'")
     else:
-        app.logger.info(f"❌ MQTT Connection failed with code {rc}. Flask-MQTT will retry.")
+         app.logger.info(f"❌ MQTT Connection failed with code {rc}. Flask-MQTT will retry.")
 
 # --- MQTT Setup (Subscriber/Publisher) ---
 @mqtt.on_message()
 def handle_messages(client, userdata, message):
     topic = message.topic
-    payload = message.payload.decode()
+    payload = message.payload.decode().split(',')
     
     # Example topic format: 'farm/FARM_A/TEMP_01/'
     
@@ -205,35 +181,125 @@ def handle_messages(client, userdata, message):
         # FIX: Changed topic_split to topic.split
         topic_parts = topic.split('/')
         
-        # Expecting farm/telemetry/FARM_ID/DEVICE_ID/
-        if len(topic_parts) < 4 or topic_parts[1] not in ['telemetry', 'status']:
-            app.logger.info(f"MQTT Topic format invalid or not telemetry/status: {topic}")
-            return # Exit if topic is not the expected format
+        # Expecting farm/sensor/FARM_ID/DEVICE_ID/
+        if len(topic_parts) >= 2 or topic_parts[1] == 'sensor':
+            farm_id_code = payload[1].split('=')[1]
+            device_id_code = payload[2].split('=')[1]
+            value = payload[3].split('=')[2] # Use raw payload if 'value' is missing
+            username = payload[0]
 
-        farm_id_code = topic_parts[2] 
-        device_id_code = topic_parts[3] 
+            sending_payload = {
+                    'farm_id_code': farm_id_code,
+                    'device_id_code': device_id_code,
+                    'value': value
+                }
+            socketio.emit('new_telemetry', sending_payload)
+            # app.logger.info(f"MQTT Data received on topic '{topic}' with the message '{sending_payload}'and broadcast to SocketIO.")
+            with app.app_context():
+                sensor_device = Device.query.filter_by(farm_id_code=farm_id_code, device_id_code=device_id_code).first()
+                current_config = json.loads(sensor_device.config_json)
+                current_config["status"] = value
+                sensor_device.config_json = json.dumps(current_config)
+                try:
+                    db.session.commit()
+                except Exception as e:
+                    db.session.rollback()
+                    # app.logger.info(f"Database error during device update: {e}")
+                    return jsonify({"error": "Internal server error during device update"}), 500
+                
+                app.logger.info("Testing timer devices")
+                user = User.query.filter_by(username=username).first()                
+                timer_devices = Device.query.filter(Device.config_json.contains('"mode": "timer"'), Device.user_id == user.id).all()
 
-        telemetry_data = json.loads(payload)
+                app.logger.info("Timer Device Testing Completed")
 
-        # 1. Extract key value for real-time update
-        value = telemetry_data.get('value', payload) # Use raw payload if 'value' is missing
-        unit = telemetry_data.get('unit', payload)
-        timestamp = datetime.now()
+                for device in timer_devices:
+                    try:
+                        # 1. Parse current config
+                        current_config = json.loads(device.config_json)
+                        previous_status = current_config.get("status", "-1")
+
+                        # 2. Check if it SHOULD be on based on time logic
+                        should_be_on = check_timer_condition(device)
+                        new_status = "1" if should_be_on else "-1"
+
+                        # 3. ONLY act if the status is changing
+                        if new_status != previous_status:
+                            # app.logger.info(f"Status change for {device.name}: {previous_status} -> {new_status}")
+                            
+                            # Update the dictionary and the DB field
+                            current_config["status"] = new_status
+                            device.config_json = json.dumps(current_config)
+
+                            # MQTT Publish
+                            topic = f'farm/commands/{username}/{device.farm_id_code}/{device.device_id_code}'
+                            app.logger.info(topic)
+                            mqtt.publish(topic, new_status, qos=1)
+
+                            # Save to Database
+                            db.session.commit()
+                            sending_payload = {
+                                    'farm_id_code': device.farm_id_code,
+                                    'device_id_code': device.device_id_code,
+                                    'value': new_status,
+                                    'mode': 'timer'
+                                }
+                            socketio.emit('command', sending_payload, namespace='/')
+                            # app.logger.info(f"Successfully updated {device.name} in DB.")
+                        
+                    except Exception as e:
+                        db.session.rollback()
+                        app.logger.error(f"Error processing device {device.device_id_code}: {e}")
+                
+                auto_devices = Device.query.filter(Device.config_json.contains('"mode": "auto"'), Device.user_id == user.id).all()
+                for device in auto_devices:
+                    try:
+                        # 1. Parse current config
+                        current_config = json.loads(device.config_json)
+                        previous_status = current_config.get("status", "-1")
+
+                        # 2. Check if it SHOULD be on based on time logic
+                        feedback_device = Device.query.filter_by(device_id_code=current_config["feedback"]).first()
+                        current_feedback = json.loads(feedback_device.config_json)
+                        criteria = current_config["setting2"]
+                        if(criteria == "น้อยกว่า"):
+                            new_status = "1" if current_feedback["status"] < current_config["setting1"] else "-1"
+                        elif(criteria == "เท่ากับ"):
+                            new_status = "1" if current_feedback["status"]  == current_config["setting1"] else "-1"
+                        else:
+                            new_status = "1" if current_feedback["status"]  > current_config["setting1"] else "-1"
+
+                        # 3. ONLY act if the status is changing
+                        if new_status != previous_status:
+                            # app.logger.info(f"Status change for {device.name}: {previous_status} -> {new_status}")
+                            
+                            # Update the dictionary and the DB field
+                            current_config["status"] = new_status
+                            device.config_json = json.dumps(current_config)
+
+                            # MQTT Publish
+                            topic = f'farm/commands/{username}/{device.farm_id_code}/{device.device_id_code}'
+                            mqtt.publish(topic, new_status, qos=1)
+
+                            # Save to Database
+                            db.session.commit()
+                            sending_payload = {
+                                    'farm_id_code': device.farm_id_code,
+                                    'device_id_code': device.device_id_code,
+                                    'value': new_status,
+                                    'mode': 'auto'
+                                }
+                            socketio.emit('command', sending_payload)
+                            # app.logger.info(f"Successfully updated {device.name} in DB.")
+                        
+                    except Exception as e:
+                        db.session.rollback()
+                        app.logger.error(f"Error processing device {device.device_id_code}: {e}")
+        else:
+            # app.logger.info(f"MQTT Topic format invalid or not sensor/commands: {topic}")
+            return # Exit if topic is not the expected format    
 
         # 2. Use SocketIO to push the data to the connected frontend clients
-        sending_payload = {
-                'farm_id': farm_id_code,
-                'device_id_code': device_id_code,
-                'value': value,
-                'timestamp': timestamp.strftime("%Y-%m-%d %H:%M:%S")
-            }
-        socketio.emit('new_telemetry', sending_payload)
-
-        app.logger.info(f"MQTT Data received on topic '{topic}' with the message '{sending_payload}'and broadcast to SocketIO.")
-
-        data_to_save = 'farm,farm_id='+farm_id_code+',device_id='+device_id_code+',label='+unit+' value='+str(value)+' '+str(int(time.time_ns()))
-        mqtt.publish('farm/sensor', data_to_save, qos=1)
-        app.logger.info(f"Sending data to telegraf: " + data_to_save)
 
     except json.JSONDecodeError:
         app.logger.info(f"Error decoding JSON payload on topic {topic}")
@@ -277,78 +343,68 @@ def require_auth(func):
 def init_db():
     """Creates tables and a default user if the database is empty."""
     with app.app_context():
-        # Force table creation immediately upon application load.
+        # 1. Force table creation immediately upon application load.
         db.create_all()
 
-        # Create a default test user if none exists for easy testing
+        # Create a default test user, farm, and devices if none exists for easy testing
         if not User.query.first():
+            # --- PHASE 1: Add Independent and Parent Records (User, Farm, Device) ---
             test_user = User(username='testuser', tel='0123456789')
             test_user.set_password('password')
             db.session.add(test_user)
+            db.session.commit()
 
             test_farm = Farm(farm_id_code='FARM000T', name='Test Farm', user_id=1, viewer='0987654321')
             db.session.add(test_farm)
-
-            test_device1 = Device(device_id_code='DEV000T', name='Test Temperature', type='เซ็นเซอร์', farm_id='FARM000T')
-            db.session.add(test_device1)
-            test_device2 = Device(device_id_code='DEV001T', name='Test Humidity', type='เซ็นเซอร์', farm_id='FARM000T')
-            db.session.add(test_device2)
-            test_device3 = Device(device_id_code='DEV002T', name='Test Moisture', type='เซ็นเซอร์', farm_id='FARM000T')
-            db.session.add(test_device3)
-            test_device4 = Device(device_id_code='DEV003T', name='Test Pump Manual', type='อุปกรณ์ขับ', farm_id='FARM000T')
-            db.session.add(test_device4)
-            test_device5 = Device(device_id_code='DEV004T', name='Test Pump Timer', type='อุปกรณ์ขับ', farm_id='FARM000T')
-            db.session.add(test_device5)
-            test_device6 = Device(device_id_code='DEV005T', name='Test Pump Auto', type='อุปกรณ์ขับ', farm_id='FARM000T')
-            db.session.add(test_device6)
-
-            test_panel1 = DashboardPanel(farm_id='FARM000T', device_id='DEV000T', panel_id_code='PAN000T', name='Temperature Gauge', type='เกจ์', config_json='' \
-            '{"unit": "C", ' \
-            '"mode": "ต่ำสุด-สูงสุด", "setting1": "20", "setting2": "50",' \
-            '"status": "1",' \
-            '"top": "0", "left": "0", "width": "400", "height": "300"}')
-            db.session.add(test_panel1)
-            test_panel2 = DashboardPanel(farm_id='FARM000T', device_id='DEV001T', panel_id_code='PAN001T', name='Humidity Gauge', type='เกจ์', config_json='' \
-            '{"unit": "%", ' \
-            '"mode": "ต่ำสุด-สูงสุด", "setting1": "0", "setting2": "100",' \
-            '"status": "1",' \
-            '"top": "0", "left": "450", "width": "400", "height": "300"}')
-            db.session.add(test_panel2)
-            test_panel3 = DashboardPanel(farm_id='FARM000T', device_id='DEV002T', panel_id_code='PAN002T', name='Moisture Gauge', type='เกจ์', config_json='' \
-            '{"unit": "%", ' \
-            '"mode": "ต่ำสุด-สูงสุด", "setting1": "0", "setting2": "100",' \
-            '"status": "1",' \
-            '"top": "0", "left": "900", "width": "400", "height": "300"}')
-            db.session.add(test_panel3)
-            test_panel4 = DashboardPanel(farm_id='FARM000T', device_id='DEV002T', panel_id_code='PAN003T', name='Moisture History', type='เส้น', config_json='' \
-            '{"unit": "%", ' \
-            '"mode": "ต่ำสุด-สูงสุด", "setting1": "35", "setting2": "45",' \
-            '"status": "1",' \
-            '"top": "350", "left": "0", "width": "1300", "height": "650"}')
-            db.session.add(test_panel4)
-            test_panel5 = DashboardPanel(farm_id='FARM000T', device_id='DEV003T', panel_id_code='PAN004T', name='Pump Manual', type='ปุ่ม', config_json='' \
-            '{"unit": "", ' \
-            '"mode": "manual",' \
-            '"status": "-1",' \
-            '"top": "0", "left": "1350", "width": "300", "height": "300"}')
-            db.session.add(test_panel5)
-            test_panel6 = DashboardPanel(farm_id='FARM000T', device_id='DEV004T', panel_id_code='PAN005T', name='Pump Timer', type='ปุ่ม', config_json='' \
-            '{"unit": "", ' \
-            '"mode": "timer", "setting1": "08:00:00", "setting2": "10", "setting3": "วินาที", "setting4": ["sun", "mon", "tue", "wed", "thu", "fri", "sat"],' \
-            '"status": "-1",' \
-            '"top": "350", "left": "1350", "width": "300", "height": "300"}')
-            db.session.add(test_panel6)
-            test_panel7 = DashboardPanel(farm_id='FARM000T', device_id='DEV005T', panel_id_code='PAN006T', name='Pump Auto', type='ปุ่ม', config_json='' \
-            '{"unit": "", ' \
-            '"mode": "auto", "setting1": "35", "setting2": "น้อยกว่า","feedback": "DEV002T",' \
-            '"status": "-1",' \
-            '"top": "700", "left": "1350", "width": "300", "height": "300"}')
-            db.session.add(test_panel7)
             db.session.commit()
 
-            app.logger.info("Default test user 'testuser' created (ID: 1).")
+            # Add Devices (Parents for DashboardPanel)
+            test_device1 = Device(device_id_code='DEV001T', name='Test Temperature', type='เซ็นเซอร์', farm_id_code='FARM000T', config_json='' \
+            '{"unit": "C", "color": "#cc1111", ' \
+            '"mode": "ต่ำสุด-สูงสุด", "setting2": "50",' \
+            '"status": "1"}')
+            db.session.add(test_device1)
+            test_device2 = Device(device_id_code='DEV000T', name='Test Humidity', type='เซ็นเซอร์', farm_id_code='FARM000T', config_json='' \
+            '{"unit": "%", "color": "#11cc11", ' \
+            '"mode": "ต่ำสุด-สูงสุด", "setting2": "100",' \
+            '"status": "1"}')
+            db.session.add(test_device2)
+            test_device3 = Device(device_id_code='DEV010T', name='Test Moisture', type='เซ็นเซอร์', farm_id_code='FARM000T', config_json='' \
+            '{"unit": "%", "color": "#1111cc", ' \
+            '"mode": "ต่ำสุด-สูงสุด", "setting2": "100",' \
+            '"status": "1"}')
+            db.session.add(test_device3)
+            test_device4 = Device(device_id_code='DEV005T', name='Test Pump', type='อุปกรณ์ขับ', farm_id_code='FARM000T', config_json='' \
+            '{"unit": "", ' \
+            '"mode": "manual",' \
+            '"status": "-1"}')
+            db.session.add(test_device4)
+            test_device5 = Device(device_id_code='DEV006T', name='Test Valve 1', type='อุปกรณ์ขับ', farm_id_code='FARM000T', config_json='' \
+            '{"unit": "", ' \
+            '"mode": "timer", "setting1": "08.00", "setting2": "10", "setting3": "วินาที", "setting4": ["sun", "mon", "tue", "wed", "thu", "fri", "sat"],' \
+            '"status": "-1"}')
+            db.session.add(test_device5)
+            test_device6 = Device(device_id_code='DEV007T', name='Test Valve 2', type='อุปกรณ์ขับ', farm_id_code='FARM000T', config_json='' \
+            '{"unit": "", ' \
+            '"mode": "auto", "setting1": "35", "setting2": "น้อยกว่า","feedback": "DEV002T",' \
+            '"status": "-1"}')
+            db.session.add(test_device6)
+            test_device7 = Device(device_id_code='DEV008T', name='Test Valve 3', type='อุปกรณ์ขับ', farm_id_code='FARM000T', config_json='' \
+            '{"unit": "", ' \
+            '"mode": "manual",' \
+            '"status": "-1"}')
+            db.session.add(test_device7)
+            
+            # Commit/Flush Phase 1: Ensure all devices are written to the database 
+            # so the Foreign Key check in the next phase passes.
+            db.session.commit()
+            # app.logger.info("Default test user 'testuser' created (ID: 1) along with test farm, devices, and panels.")
 
 init_db()
+
+@app.route('/main')
+def index():
+    return render_template('custom_farm_manager.html')
 
 # --- API Routes ---
 
@@ -388,7 +444,7 @@ def register_user():
         }), 201
     except Exception as e:
         db.session.rollback()
-        app.logger.info(f"Database error during registration: {e}")
+        # app.logger.info(f"Database error during registration: {e}")
         return jsonify({"error": "Internal server error during registration"}), 500
 
 @app.route('/api/v1/users/login', methods=['POST'])
@@ -429,7 +485,7 @@ def change_password(user, data):
         }), 200
     except Exception as e:
         db.session.rollback()
-        app.logger.info(f"Database error during password changing: {e}")
+        # app.logger.info(f"Database error during password changing: {e}")
         return jsonify({"error": "Internal server error during password changing"}), 500
 
 # ----------------------------------------------------
@@ -479,7 +535,7 @@ def create_farm(user, data):
         }), 201
     except Exception as e:
         db.session.rollback()
-        app.logger.info(f"Database error during farm creation: {e}")
+        # app.logger.info(f"Database error during farm creation: {e}")
         return jsonify({"error": "Internal server error during farm creation"}), 500
     
 
@@ -503,7 +559,7 @@ def update_farm(user, data, farm_db_id):
         }), 200
     except Exception as e:
         db.session.rollback()
-        app.logger.info(f"Database error during farm update: {e}")
+        # app.logger.info(f"Database error during farm update: {e}")
         return jsonify({"error": "Internal server error during farm update"}), 500
 
 # Using POST for delete, as requested by user
@@ -521,7 +577,7 @@ def delete_farm(user, data, farm_db_id):
         return jsonify({"message": f"Farm '{farm.name}' deleted successfully."}), 200
     except Exception as e:
         db.session.rollback()
-        app.logger.info(f"Database error during farm deletion: {e}")
+        # app.logger.info(f"Database error during farm deletion: {e}")
         return jsonify({"error": "Internal server error during farm deletion"}), 500
 
 # ----------------------------------------------------
@@ -538,12 +594,22 @@ def get_devices(user, data):
 
     farm = Farm.query.filter_by(user_id=user.id, farm_id_code=farm_id_code).first()
     
-    if not farm:
+    # if not (farm or user.tel in (Farm.query.filter_by(farm_id_code=farm_id_code).first().share_farm())):
+    #     return jsonify({"error": "Farm not found or access denied."}), 404
+    sharedFarm = Farm.query.filter(Farm.farm_id_code == farm_id_code, Farm.viewer.contains(user.tel)).first()
+
+    if farm:
+        devices = Device.query.filter_by(farm_id_code=farm.farm_id_code).all()
+        return jsonify([device.to_dict() for device in devices]), 200
+    elif sharedFarm:
+        sharedDevices = Device.query.filter_by(farm_id_code=sharedFarm.farm_id_code).all()
+        return jsonify([device.to_dict() for device in sharedDevices]), 200
+    else:
         return jsonify({"error": "Farm not found or access denied."}), 404
     
-    devices = Device.query.filter_by(farm_id=farm.farm_id_code).all()
+    # devices = Device.query.filter_by(farm_id_code=farm.farm_id_code).all()
     
-    return jsonify({"devices": [d.to_dict() for d in devices]}), 200
+    # return jsonify({"devices": [d.to_dict() for d in devices]}), 200
 
 
 @app.route('/api/v1/devices/create', methods=['POST'])
@@ -552,8 +618,9 @@ def create_device(user, data):
     farm_id_code = data.get('farm_id_code')
     device_id_code = data.get('device_id_code')
     device_type = data.get('type')
+    user_id = data.get('user_id')
     name = data.get('name')
-    location = data.get('location')
+    config = json.dumps(data.get('config', {}))
 
     if not all([farm_id_code, device_id_code, device_type, name]):
         return jsonify({"error": "Missing required fields (farm_id_code, device_id_code, type, name)"}), 400
@@ -562,15 +629,16 @@ def create_device(user, data):
     if not farm:
         return jsonify({"error": "Target farm not found or access denied."}), 404
 
-    if Device.query.filter_by(farm_id=farm.farm_id_code, device_id_code=device_id_code).first():
+    if Device.query.filter_by(farm_id_code=farm.farm_id_code, device_id_code=device_id_code).first():
         return jsonify({"error": f"Device ID '{device_id_code}' already exists in farm '{farm_id_code}'."}), 409
 
     new_device = Device(
         device_id_code=device_id_code,
         type=device_type,
         name=name,
-        location=location,
-        farm_id=farm_id_code
+        farm_id_code=farm_id_code,
+        config_json=config,
+        user_id=user_id
     )
 
     try:
@@ -583,7 +651,7 @@ def create_device(user, data):
         }), 201
     except Exception as e:
         db.session.rollback()
-        app.logger.info(f"Database error during device creation: {e}")
+        # app.logger.info(f"Database error during device creation: {e}")
         return jsonify({"error": "Internal server error during device creation"}), 500
 
 @app.route('/api/v1/devices/<int:device_db_id>', methods=['PUT'])
@@ -593,13 +661,14 @@ def update_device(user, data, device_db_id):
     if not device:
         return jsonify({"error": "Device not found."}), 404
 
-    farm = Farm.query.filter_by(farm_id_code=device.farm_id, user_id=user.id).first()
+    farm = Farm.query.filter_by(farm_id_code=device.farm_id_code, user_id=user.id).first()
     if not farm:
         return jsonify({"error": "Access denied. You do not own this device's farm."}), 403
 
     device.type = data.get('type', device.type)
     device.name = data.get('name', device.name)
-    device.location = data.get('location', device.location)
+    if 'config' in data:
+        device.config_json = json.dumps(data['config'])
     
     try:
         db.session.commit()
@@ -609,7 +678,7 @@ def update_device(user, data, device_db_id):
         }), 200
     except Exception as e:
         db.session.rollback()
-        app.logger.info(f"Database error during device update: {e}")
+        # app.logger.info(f"Database error during device update: {e}")
         return jsonify({"error": "Internal server error during device update"}), 500
 
 # Using POST for delete, as requested by user
@@ -621,7 +690,7 @@ def delete_device(user, data, device_db_id):
     if not device:
         return jsonify({"error": "Device not found."}), 404
         
-    farm = Farm.query.filter_by(farm_id_code=device.farm_id, user_id=user.id).first()
+    farm = Farm.query.filter_by(farm_id_code=device.farm_id_code, user_id=user.id).first()
     if not farm:
         return jsonify({"error": "Access denied. You do not own this device's farm."}), 403
 
@@ -631,122 +700,8 @@ def delete_device(user, data, device_db_id):
         return jsonify({"message": f"Device '{device.name}' deleted successfully."}), 200
     except Exception as e:
         db.session.rollback()
-        app.logger.info(f"Database error during device deletion: {e}")
+        # app.logger.info(f"Database error during device deletion: {e}")
         return jsonify({"error": "Internal server error during device deletion"}), 500
-    
-
-# ----------------------------------------------------
-# Panel Management (CRUD - No change to logic)
-# ----------------------------------------------------
-    
-@app.route('/api/v1/panels', methods=['POST'])
-@require_auth
-def get_panels(user, data):
-    """Returns all panels belonging to the authenticated user."""
-    farm_id_code = data.get('farm_id_code')
-
-    if not farm_id_code:
-        return jsonify({"error": "Missing 'farm_id_code' in request body."}), 400
-    
-    farm = Farm.query.filter_by(farm_id_code=farm_id_code, user_id=user.id).first()
-    sharedFarms = Farm.query.filter(Farm.viewer.contains(user.tel), Farm.farm_id_code == farm_id_code).first()
-
-    if farm:
-        panels = DashboardPanel.query.filter_by(farm_id=farm.farm_id_code).all()
-        return jsonify([panel.to_dict() for panel in panels])
-    elif sharedFarms:
-        sharedPanels = DashboardPanel.query.filter_by(farm_id=sharedFarms.farm_id_code).all()
-        return jsonify([panel.to_dict() for panel in sharedPanels])
-    else:
-        return jsonify({"error": "Farm not found or access denied."}), 404
-        
-
-@app.route('/api/v1/panels/create', methods=['POST'])
-@require_auth
-def create_panel(user, data):
-    panel_id_code = data.get('panel_id_code')
-    panel_type = data.get('type')
-    name = data.get('name')
-    farm_id_code = data.get('farm_id_code')
-    device_id_code = data.get('device_id_code')
-    config = json.dumps(data.get('config', {}))
-
-    if not all([panel_id_code, panel_type, name, device_id_code, farm_id_code]):
-        return jsonify({"error": "Missing required fields (panel_id_code, panel_type, name, device_id_code, farm_id_code)"}), 400
-    
-    farm = Farm.query.filter_by(user_id=user.id, farm_id_code=farm_id_code).first()
-    if not farm:
-        return jsonify({"error": "Target farm not found or access denied."}), 404
-
-    device = Device.query.filter_by(farm_id=farm.farm_id_code, device_id_code=device_id_code).first()
-    if not farm:
-        return jsonify({"error": "Target device not found or access denied."}), 404
-
-    if DashboardPanel.query.filter_by(farm_id=farm.farm_id_code, device_id=device_id_code, panel_id_code=panel_id_code).first():
-        return jsonify({"error": f"Device ID '{panel_id_code}' already exists in farm '{panel_id_code}'."}), 409
-
-    new_panel = DashboardPanel(
-        panel_id_code=panel_id_code,
-        name=name,
-        type=panel_type,
-        farm_id=farm_id_code,
-        device_id=device_id_code,
-        config_json=config
-    )
-    
-    try:
-        db.session.add(new_panel)
-        db.session.commit()
-        
-        return jsonify({
-            "message": "Panel created successfully",
-            "device": new_panel.to_dict()
-        }), 201
-    except Exception as e:
-        db.session.rollback()
-        app.logger.info(f"Database error during panel creation: {e}")
-        return jsonify({"error": "Internal server error during panel creation"}), 500
-
-@app.route('/api/v1/panels/<int:panel_id>', methods=['PUT'])
-@require_auth
-def update_panel(user, data, panel_id):
-    """Updates an existing panel, ensuring ownership."""
-    panel = DashboardPanel.query.get(panel_id)
-
-    if not panel:
-        return jsonify({"error": "Panel not found."}), 404
-    
-    farm = Farm.query.filter_by(farm_id_code=panel.farm_id, user_id=user.id).first()
-    if not farm:
-        return jsonify({"error": "Access denied. You do not own this device's farm."}), 403
-
-        
-    panel.name = data.get('name', panel.name)
-    panel.type = data.get('type', panel.type)
-    panel.device_id = data.get('device_id_code', panel.device_id)
-    
-    if 'config' in data:
-        panel.config_json = json.dumps(data['config'])
-        
-    db.session.commit()
-    return jsonify(panel.to_dict())
-
-@app.route('/api/v1/panels/<int:panel_id>/delete', methods=['POST'])
-@require_auth
-def delete_panel(user, data, panel_id):
-    """Deletes an existing panel, ensuring ownership."""
-    panel = DashboardPanel.query.get(panel_id)
-
-    if not panel:
-        return jsonify({"error": "Panel not found."}), 404
-        
-    farm = Farm.query.filter_by(farm_id_code=panel.farm_id, user_id=user.id).first()
-    if not farm:
-        return jsonify({"error": "Access denied. You do not own this device's farm."}), 403
-
-    db.session.delete(panel)
-    db.session.commit()
-    return jsonify({"message": f"Panel {panel_id} deleted successfully."}), 200
 
 # ----------------------------------------------------
 # Control Endpoint (Pump)
@@ -759,19 +714,92 @@ def send_device_command(user, data):
     # Ensure the user owns the device before sending a command (security check)
     
     command = data.get('command') # e.g., 'PUMP_ON', 'PUMP_OFF'
-    device_id_code = data.get('device_id')
+    username = data.get('username')
+    device_id_code = data.get('device_id_code')
     farm_id_code = data.get('farm_id_code')
+
+    device = Device.query.filter_by(farm_id_code=farm_id_code, device_id_code=device_id_code).first()
     
     # Topic format for commands: 'commands/FARM000/DEV001/pump'
-    command_topic = f'farm/commands/{farm_id_code}/{device_id_code}' 
 
     if not command:
         return jsonify({"error": "Missing 'command' parameter."}), 400
-    
+    try:
+        # 1. Parse current config
+        current_config = json.loads(device.config_json)
+        previous_status = current_config.get("status", "-1")
+
+        # 2. Check if it SHOULD be on based on time logic
+        new_status = command
+
+        # 3. ONLY act if the status is changing
+        if new_status != previous_status:
+            # app.logger.info(f"Status change for {device.name}: {previous_status} -> {new_status}")
+            
+            # Update the dictionary and the DB field
+            current_config["status"] = new_status
+            device.config_json = json.dumps(current_config)
+
+            # MQTT Publish
+            topic = f'farm/commands/{username}/{device.farm_id_code}/{device.device_id_code}'
+            mqtt.publish(topic, new_status, qos=1)
+
+            # Save to Database
+            db.session.commit()
+            # app.logger.info(f"Successfully updated {device.name} in DB.")
+        
+    except Exception as e:
+        db.session.rollback()
+        app.logger.error(f"Error processing device {device.device_id_code}: {e}")
     # Publish the command over MQTT
-    mqtt.publish(command_topic, command, qos=1) 
     
     return jsonify({"message": f"Command '{command}' sent to {device_id_code}."}), 200
+
+def check_timer_condition(device):
+    # Parse the config string into a dictionary
+    config = json.loads(device.config_json)
+    
+    if config.get("mode") != "timer":
+        return False
+
+    now = datetime.now(tz=timezone(timedelta(hours=7)))
+    # Get current day in lowercase 'mon', 'tue', etc.
+    current_day = now.strftime("%a").lower() 
+    
+    # 1. Check if today is an active day
+    active_days = config.get("setting4", [])
+    if current_day not in active_days:
+        return False
+
+    # 2. Parse Start Time (setting1: "08.00")
+    try:
+        start_time_str = config.get("setting1")
+        # Converting "08.00" to a time object
+        start_time = datetime.strptime(start_time_str, "%H.%M").time()
+        # Create a datetime for today at that start time
+        start_dt = now.replace(hour=start_time.hour, minute=start_time.minute, second=0, microsecond=0)
+    except ValueError:
+        return False
+
+    # 3. Calculate Duration (setting2 and setting3)
+    duration = int(config.get("setting2", 0))
+    unit = config.get("setting3") # "วินาที" (seconds) or "นาที" (minutes)
+    
+    if unit == "วินาที":
+        end_dt = start_dt + timedelta(seconds=duration)
+    elif unit == "นาที":
+        end_dt = start_dt + timedelta(minutes=duration)
+    elif unit == "ชั่วโมง":
+        end_dt = start_dt + timedelta(hours=duration)
+    else:
+        return False
+
+    # 4. Final Verdict: Is 'now' between start and end?
+    return start_dt <= now <= end_dt
+
+# @scheduler.task('interval', id='check_pumps', seconds=5)
+# def monitor_pumps():
+    
 
 socketio_app = socketio 
 socketio.run(app, host='0.0.0.0', port=5000, debug=False)
